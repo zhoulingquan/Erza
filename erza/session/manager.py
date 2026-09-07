@@ -252,6 +252,8 @@ class Session:
         self.last_consolidated = 0
         self.updated_at = datetime.now()
         self.metadata.pop("_last_summary", None)
+        # W10-C2: allow the memory snapshot to be re-stamped after /new.
+        self.metadata.pop("_memory_context_stamped", None)
 
     def retain_recent_legal_suffix(self, max_messages: int) -> None:
         """Keep a legal recent suffix constrained by a hard message cap."""

@@ -300,80 +300,67 @@ class TestBuildSystemPrompt:
 
 
 class TestEnforceInjectionBudget:
-    """验证 65K token 注入预算按优先级截断/丢弃。"""
+    """65K token injection budget: drop/truncate by priority ladder.
+
+    W10-C2: dynamic sections (memory/history/notes) no longer live in the
+    system prompt, so the ladder only guards CRITICAL/SKILLS/SUMMARY.
+    """
 
     def test_under_budget_unchanged(self):
-        """未超预算时应原样返回。"""
         parts = [
             (ContextBuilder._PRIORITY_CRITICAL, "identity"),
-            (ContextBuilder._PRIORITY_MEMORY, "memory content"),
-            (ContextBuilder._PRIORITY_NOTES, "scratchpad notes"),
+            (ContextBuilder._PRIORITY_SUMMARY, "archived summary"),
         ]
         result = ContextBuilder._enforce_injection_budget(parts)
-        assert len(result) == 3
+        assert len(result) == 2
         assert all(p in result for p in parts)
 
-    def test_notes_dropped_first(self):
-        """超预算时 NOTES 优先级最低，应最先被丢弃。"""
-        # 构造超过 65K token 的内容（每字符 ≈ 0.25 token）
+    def test_skills_list_and_subagent_dropped_first(self):
         big_blob = "x" * 300_000  # ~75K tokens
         parts = [
             (ContextBuilder._PRIORITY_CRITICAL, "identity"),
-            (ContextBuilder._PRIORITY_NOTES, big_blob),
-        ]
-        result = ContextBuilder._enforce_injection_budget(parts)
-        # NOTES 应被丢弃
-        assert not any(p[0] == ContextBuilder._PRIORITY_NOTES for p in result)
-        # CRITICAL 保留
-        assert any(p[0] == ContextBuilder._PRIORITY_CRITICAL for p in result)
-
-    def test_skills_list_dropped_before_memory(self):
-        """SKILLS_LIST/SUBAGENT 应在 MEMORY 之前丢弃。"""
-        big_blob = "x" * 300_000
-        parts = [
-            (ContextBuilder._PRIORITY_CRITICAL, "identity"),
-            (ContextBuilder._PRIORITY_MEMORY, big_blob),
+            (ContextBuilder._PRIORITY_SUMMARY, big_blob),
             (ContextBuilder._PRIORITY_SKILLS_LIST, "skills summary"),
             (ContextBuilder._PRIORITY_SUBAGENT, "subagent list"),
-            (ContextBuilder._PRIORITY_NOTES, "notes"),
         ]
         result = ContextBuilder._enforce_injection_budget(parts)
         priorities = {p[0] for p in result}
-        # NOTES、SKILLS_LIST、SUBAGENT 应被丢弃
-        assert ContextBuilder._PRIORITY_NOTES not in priorities
         assert ContextBuilder._PRIORITY_SKILLS_LIST not in priorities
         assert ContextBuilder._PRIORITY_SUBAGENT not in priorities
-        # MEMORY 应被截断但保留
-        assert ContextBuilder._PRIORITY_MEMORY in priorities
+        assert ContextBuilder._PRIORITY_SUMMARY in priorities
+
+    def test_summary_truncated_not_dropped(self):
+        big_blob = "x" * 300_000
+        parts = [
+            (ContextBuilder._PRIORITY_CRITICAL, "identity"),
+            (ContextBuilder._PRIORITY_SUMMARY, big_blob),
+        ]
+        result = ContextBuilder._enforce_injection_budget(parts)
+        summary_parts = [p for p in result if p[0] == ContextBuilder._PRIORITY_SUMMARY]
+        assert len(summary_parts) == 1
+        assert len(summary_parts[0][1]) < len(big_blob)
+
+    def test_skills_active_truncated_not_dropped(self):
+        big_skills = "s" * 300_000
+        parts = [
+            (ContextBuilder._PRIORITY_CRITICAL, "identity"),
+            (ContextBuilder._PRIORITY_SKILLS_ACTIVE, big_skills),
+        ]
+        result = ContextBuilder._enforce_injection_budget(parts)
+        active = [p for p in result if p[0] == ContextBuilder._PRIORITY_SKILLS_ACTIVE]
+        assert len(active) == 1
+        assert len(active[0][1]) < len(big_skills)
 
     def test_critical_never_dropped(self):
-        """CRITICAL 永不丢弃，即使总量远超预算。"""
         big_blob = "x" * 1_000_000  # ~250K tokens
         parts = [
             (ContextBuilder._PRIORITY_CRITICAL, big_blob),
-            (ContextBuilder._PRIORITY_NOTES, "notes"),
+            (ContextBuilder._PRIORITY_SUMMARY, "summary"),
         ]
         result = ContextBuilder._enforce_injection_budget(parts)
-        # CRITICAL 完整保留（未被截断）
         critical_parts = [p for p in result if p[0] == ContextBuilder._PRIORITY_CRITICAL]
         assert len(critical_parts) == 1
         assert critical_parts[0][1] == big_blob
-
-    def test_history_truncated_not_dropped(self):
-        """超预算时 HISTORY 应被截断但保留（不丢弃）。"""
-        # 构造总量刚好超预算，但 HISTORY 单独不会触发丢弃 NOTES/SKILLS 的场景
-        big_history = "h" * 200_000  # ~50K tokens
-        big_memory = "m" * 100_000  # ~25K tokens
-        parts = [
-            (ContextBuilder._PRIORITY_CRITICAL, "identity"),
-            (ContextBuilder._PRIORITY_MEMORY, big_memory),
-            (ContextBuilder._PRIORITY_HISTORY, big_history),
-        ]
-        result = ContextBuilder._enforce_injection_budget(parts)
-        # HISTORY 保留但被截断
-        history_parts = [p for p in result if p[0] == ContextBuilder._PRIORITY_HISTORY]
-        assert len(history_parts) == 1
-        assert len(history_parts[0][1]) < len(big_history)
 
     def test_estimate_tokens_heuristic(self):
         """token 估算启发式：chars/4 下界。"""

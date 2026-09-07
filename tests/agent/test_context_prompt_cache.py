@@ -142,59 +142,63 @@ def test_runtime_context_excludes_sender_id_when_not_provided(tmp_path) -> None:
     assert "Sender ID:" not in user_content
 
 
-def test_unprocessed_history_injected_into_system_prompt(tmp_path) -> None:
-    """Entries in history.jsonl not yet consumed by Dream appear with timestamps."""
+def test_unprocessed_history_lands_in_memory_snapshot_not_system_prompt(tmp_path) -> None:
+    """Entries in history.jsonl not yet consumed by Dream appear in the snapshot."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
     builder.memory.append_history("User asked about weather in Tokyo")
     builder.memory.append_history("Agent fetched forecast via web_fetch")
 
+    snapshot = builder.build_memory_context()
+    assert "# Recent History" in snapshot
+    assert "User asked about weather in Tokyo" in snapshot
+    assert "Agent fetched forecast via web_fetch" in snapshot
+    assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]", snapshot)
+
+    # W10-C2: the frozen system prefix must stay free of recent history.
     prompt = builder.build_system_prompt()
-    assert "# Recent History" in prompt
-    assert "User asked about weather in Tokyo" in prompt
-    assert "Agent fetched forecast via web_fetch" in prompt
-    assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]", prompt)
+    assert "# Recent History" not in prompt
+    assert "weather in Tokyo" not in prompt
 
 
 def test_recent_history_capped_at_max(tmp_path) -> None:
-    """Only the most recent _MAX_RECENT_HISTORY entries are injected."""
+    """Only the most recent _MAX_RECENT_HISTORY entries are in the snapshot."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
     for i in range(builder._MAX_RECENT_HISTORY + 20):
         builder.memory.append_history(f"entry-{i}")
 
-    prompt = builder.build_system_prompt()
-    assert "entry-0" not in prompt
-    assert "entry-19" not in prompt
-    assert f"entry-{builder._MAX_RECENT_HISTORY + 19}" in prompt
+    snapshot = builder.build_memory_context()
+    assert "entry-0" not in snapshot
+    assert "entry-19" not in snapshot
+    assert f"entry-{builder._MAX_RECENT_HISTORY + 19}" in snapshot
 
 
 def test_recent_history_truncated_at_max_chars(tmp_path) -> None:
-    """Recent History section must be truncated at _MAX_HISTORY_CHARS."""
+    """The Recent History section must be truncated at _MAX_HISTORY_CHARS."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
     big_entry = "x" * (builder._MAX_HISTORY_CHARS + 5_000)
     builder.memory.append_history(big_entry)
 
-    prompt = builder.build_system_prompt()
-    history_section = prompt.split("# Recent History\n\n", 1)
+    snapshot = builder.build_memory_context()
+    history_section = snapshot.split("# Recent History\n\n", 1)
     assert len(history_section) == 2
     assert len(history_section[1]) < builder._MAX_HISTORY_CHARS + 200
 
 
-def test_no_recent_history_when_dream_has_processed_all(tmp_path) -> None:
-    """If Dream has consumed everything, no Recent History section should appear."""
+def test_empty_snapshot_when_dream_has_processed_all(tmp_path) -> None:
+    """If Dream has consumed everything, the snapshot is empty so callers skip it."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
     cursor = builder.memory.append_history("already processed entry")
     builder.memory.set_last_dream_cursor(cursor)
 
-    prompt = builder.build_system_prompt()
-    assert "# Recent History" not in prompt
+    assert builder.build_memory_context() == ""
 
 
 def test_partial_dream_processing_shows_only_remainder(tmp_path) -> None:
@@ -209,12 +213,28 @@ def test_partial_dream_processing_shows_only_remainder(tmp_path) -> None:
 
     builder.memory.set_last_dream_cursor(c2)
 
-    prompt = builder.build_system_prompt()
-    assert "# Recent History" in prompt
-    assert "old conversation about Python" not in prompt
-    assert "old conversation about Rust" not in prompt
-    assert "recent question about Docker" in prompt
-    assert "recent question about K8s" in prompt
+    snapshot = builder.build_memory_context()
+    assert "# Recent History" in snapshot
+    assert "old conversation about Python" not in snapshot
+    assert "old conversation about Rust" not in snapshot
+    assert "recent question about Docker" in snapshot
+    assert "recent question about K8s" in snapshot
+
+
+def test_system_prompt_byte_stable_when_dynamic_memory_changes(tmp_path) -> None:
+    """W10-C2: history/notes/recall must not alter the frozen system prefix."""
+    workspace = _make_workspace(tmp_path)
+    builder = ContextBuilder(workspace)
+
+    prompt_before = builder.build_system_prompt()
+
+    builder.memory.append_history("new history entry that used to drift the prefix")
+    builder.memory.append_notes("scratchpad note that used to drift the prefix")
+
+    prompt_after = builder.build_system_prompt()
+
+    assert prompt_before == prompt_after
+    assert "scratchpad note" not in prompt_after
 
 
 def test_execution_rules_in_system_prompt(tmp_path) -> None:

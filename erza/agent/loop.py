@@ -7,6 +7,7 @@ import functools
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from weakref import WeakValueDictionary
@@ -644,6 +645,7 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
                 schedule_background=lambda coro: self._schedule_background(coro),
                 set_tool_context=self._set_tool_context,
                 build_initial_messages=self._build_initial_messages,
+                ensure_memory_context_message=self._ensure_memory_context_message,
                 replay_token_budget=self._replay_token_budget,
                 llm_runtime=self.llm_runtime,
                 refresh_provider_snapshot=self._refresh_provider_snapshot,
@@ -962,6 +964,36 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
             inbound_message=msg,
             agent_override=agent_override,
         )
+
+    def _ensure_memory_context_message(self, session: Session, workspace: Path | str) -> None:
+        """Stamp the session-memory snapshot as the first message, once per session.
+
+        W10-C2: the "Recent History" section moved out of the system prompt;
+        the snapshot rides as the first session message instead so the system
+        prefix stays byte-stable for prompt-cache hits. A session that already
+        starts with a snapshot message — or whose (empty) snapshot was already
+        attempted — is left untouched until ``Session.clear()`` (i.e. /new).
+        """
+        if session.metadata.get("_memory_context_stamped"):
+            return
+        if session.messages and session.messages[0].get("_memory_context"):
+            return
+        snapshot = self.context.build_memory_context(workspace)
+        if not snapshot:
+            # Empty snapshot: record the attempt so we don't retry per turn.
+            session.metadata["_memory_context_stamped"] = True
+            self.sessions.save(session)
+            return
+        session.messages.insert(
+            0,
+            {
+                "role": "user",
+                "content": snapshot,
+                "timestamp": datetime.now().isoformat(),
+                "_memory_context": True,
+            },
+        )
+        self.sessions.save(session)
 
     # -- dispatcher delegation ------------------------------------------------
     #

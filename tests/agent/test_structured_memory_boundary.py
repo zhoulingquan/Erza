@@ -119,7 +119,7 @@ def test_governed_recall_writes_audit_when_enabled(tmp_path, monkeypatch):
         lambda recall_query, recall_result: written.append((recall_query, recall_result)),
     )
 
-    builder.build_system_prompt(recall_query="private governed query")
+    builder.build_messages(history=[], current_message="private governed query")
 
     assert len(written) == 1
     assert written[0][0].query_text == "private governed query"
@@ -437,7 +437,8 @@ def test_governed_prompt_never_whole_injects_shared_legacy_file(tmp_path):
         structured_memory_config=StructuredMemoryConfig(),
     )
 
-    prompt = builder.build_system_prompt(recall_query="unrelated")
+    messages = builder.build_messages(history=[], current_message="unrelated")
+    prompt = str(messages[0]["content"]) + str(messages[-1]["content"])
 
     assert "secret shared legacy fact" not in prompt
 
@@ -479,6 +480,7 @@ def test_governed_prompt_never_injects_candidate_record(tmp_path):
         ),
     )
 
-    prompt = builder.build_system_prompt(recall_query="Erza architecture.memory")
+    messages = builder.build_messages(history=[], current_message="Erza architecture.memory")
+    prompt = str(messages[0]["content"]) + str(messages[-1]["content"])
 
     assert statement not in prompt

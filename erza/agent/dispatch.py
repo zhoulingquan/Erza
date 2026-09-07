@@ -462,6 +462,10 @@ class MessageDispatcher:
             "max_tokens": self._agent._replay_token_budget(),
             "include_timestamps": True,
         }
+        if not is_subagent:
+            # W10-C2: stamp the once-per-session memory snapshot before
+            # replaying history; subagent resume turns never stamp.
+            self._agent._ensure_memory_context_message(session, workspace_scope.project_path)
         history = session.get_history(**_hist_kwargs)
         current_role = "assistant" if is_subagent else "user"
         memory_user_key = None

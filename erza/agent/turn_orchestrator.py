@@ -153,6 +153,9 @@ class TurnDeps:
     schedule_background: Callable[[Any], None]
     set_tool_context: Callable[..., None]
     build_initial_messages: Callable[..., Awaitable[list[dict[str, Any]]]]
+    # W10-C2: stamps the once-per-session memory snapshot as the first
+    # session message before history replay (no-op when already stamped).
+    ensure_memory_context_message: Callable[..., None]
     replay_token_budget: Callable[[], int]
     llm_runtime: Callable[[], LLMRuntime]
     refresh_provider_snapshot: Callable[[], None]
@@ -387,6 +390,10 @@ class TurnOrchestrator:
         if message_tool := self._deps.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
+
+        # W10-C2: stamp the once-per-session memory snapshot (first session
+        # message) before replaying history so it rides the history replay.
+        self._deps.ensure_memory_context_message(ctx.session, scope.project_path)
 
         _hist_kwargs: dict[str, Any] = {
             "max_messages": self._deps.max_messages,

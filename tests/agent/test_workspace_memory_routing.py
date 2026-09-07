@@ -176,7 +176,24 @@ def test_context_building_for_workspace_b_uses_b_memory_only(tmp_path: Path) -> 
     builder.memory.append_notes("NOTES A ONLY")
     store_b.append_notes("NOTES B ONLY")
 
-    prompt_b = builder.build_system_prompt(workspace=b, recall_query="shared-subject")
+    # W10-C2: durable policy stays in the system prompt, structured recall and
+    # notes ride the current user message, history rides the memory snapshot.
+    def _full_context(workspace: Path, chat_id: str) -> str:
+        parts = [
+            builder.build_system_prompt(workspace=workspace),
+            builder.build_memory_context(workspace),
+        ]
+        messages = builder.build_messages(
+            history=[],
+            current_message="shared-subject",
+            channel="websocket",
+            chat_id=chat_id,
+            workspace=workspace,
+        )
+        parts.append(str(messages[-1]["content"]))
+        return "\n".join(parts)
+
+    prompt_b = _full_context(b, "chat-b")
 
     assert "FACT B ONLY" in prompt_b
     assert "HISTORY B ONLY" in prompt_b
@@ -187,14 +204,16 @@ def test_context_building_for_workspace_b_uses_b_memory_only(tmp_path: Path) -> 
     assert "POLICY A ONLY" not in prompt_b
     assert "NOTES A ONLY" not in prompt_b
 
-    prompt_a = builder.build_system_prompt(recall_query="shared-subject")
+    prompt_a = _full_context(a, "chat-a")
 
     assert "FACT A ONLY" in prompt_a
     assert "HISTORY A ONLY" in prompt_a
     assert "POLICY A ONLY" in prompt_a
+    assert "NOTES A ONLY" in prompt_a
     assert "FACT B ONLY" not in prompt_a
     assert "HISTORY B ONLY" not in prompt_a
     assert "POLICY B ONLY" not in prompt_a
+    assert "NOTES B ONLY" not in prompt_a
 
 
 def test_recall_audit_written_to_effective_workspace(tmp_path: Path) -> None:
@@ -207,7 +226,13 @@ def test_recall_audit_written_to_effective_workspace(tmp_path: Path) -> None:
         structured_memory_config=StructuredMemoryConfig(recall_audit_enabled=True),
     )
 
-    builder.build_system_prompt(workspace=b, recall_query="shared-subject")
+    builder.build_messages(
+        history=[],
+        current_message="shared-subject",
+        channel="websocket",
+        chat_id="chat-b",
+        workspace=b,
+    )
 
     b_audit = b / "memory" / "structured" / "recall-audit.jsonl"
     a_audit = a / "memory" / "structured" / "recall-audit.jsonl"

@@ -125,19 +125,28 @@ class TestStructuredMemoryContext:
 
     def test_skips_recall_without_query(self, workspace):
         builder = make_builder(workspace)
+        seed_active_record(builder.memory, "Main uses deterministic structured recall.")
 
-        prompt = builder.build_system_prompt()
+        # Empty current message (e.g. subagent resume turns) yields no recall.
+        messages = builder.build_messages(history=[], current_message="")
 
-        assert RECALL_HEADER not in prompt
+        user = str(messages[-1]["content"])
+        assert RECALL_HEADER not in user
 
-    def test_injects_recall_hits(self, workspace):
+    def test_injects_recall_hits_into_user_tail(self, workspace):
         builder = make_builder(workspace)
         seed_active_record(builder.memory, "Main uses deterministic structured recall.")
 
-        prompt = builder.build_system_prompt(recall_query="architecture.memory recall strategy")
+        messages = builder.build_messages(
+            history=[], current_message="architecture.memory recall strategy"
+        )
 
-        assert RECALL_HEADER in prompt
-        assert "deterministic structured recall" in prompt
+        user = str(messages[-1]["content"])
+        system = messages[0]["content"]
+        assert RECALL_HEADER in user
+        assert "deterministic structured recall" in user
+        # W10-C2: recall must not leak into the frozen system prefix.
+        assert RECALL_HEADER not in system
 
     def test_injects_custom_policy(self, workspace):
         policy = workspace / "memory" / "shared" / "POLICY.md"
@@ -157,9 +166,9 @@ class TestStructuredMemoryContext:
             history=[], current_message="how does Erza recall memory?"
         )
 
-        system = messages[0]["content"]
-        assert RECALL_HEADER in system
-        assert "stays local" in system
+        user = str(messages[-1]["content"])
+        assert RECALL_HEADER in user
+        assert "stays local" in user
 
     def test_governed_recall_degraded_injects_diagnostic_without_facts(
         self, workspace, monkeypatch
@@ -175,12 +184,13 @@ class TestStructuredMemoryContext:
             ),
         )
 
-        prompt = builder.build_system_prompt(recall_query="Erza memory")
+        messages = builder.build_messages(history=[], current_message="Erza memory")
+        user = str(messages[-1]["content"])
 
-        assert "Structured memory recall is unavailable" in prompt
-        assert "journal_corrupt" in prompt
-        assert "invalid transaction" not in prompt
-        assert RECALL_HEADER not in prompt
+        assert "Structured memory recall is unavailable" in user
+        assert "journal_corrupt" in user
+        assert "invalid transaction" not in user
+        assert RECALL_HEADER not in user
 
     def test_build_messages_recall_includes_exact_session_and_user_scopes(self, workspace):
         builder = make_builder(workspace)
@@ -204,9 +214,9 @@ class TestStructuredMemoryContext:
             session_key="web:chat-7",
         )
 
-        system = messages[0]["content"]
-        assert "Alice prefers compact responses" in system
-        assert "This session is debugging caching" in system
+        user = str(messages[-1]["content"])
+        assert "Alice prefers compact responses" in user
+        assert "This session is debugging caching" in user
 
     def test_build_messages_uses_default_user_scope_without_sender(self, workspace):
         builder = make_builder(workspace)
@@ -223,7 +233,7 @@ class TestStructuredMemoryContext:
             session_key="cli:direct",
         )
 
-        assert "Default user prefers Chinese" in messages[0]["content"]
+        assert "Default user prefers Chinese" in str(messages[-1]["content"])
 
     def test_subagent_scope_uses_parent_session_and_user_identity(self, workspace):
         builder = make_builder(workspace)
@@ -242,4 +252,4 @@ class TestStructuredMemoryContext:
             memory_user_key="user:alice",
         )
 
-        assert "Parent user wants terse output" in messages[0]["content"]
+        assert "Parent user wants terse output" in str(messages[-1]["content"])

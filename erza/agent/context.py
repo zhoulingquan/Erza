@@ -73,24 +73,21 @@ class ContextBuilder:
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
 
     # 总注入预算上限（借鉴 MiMo Code 的 65K rebuild budget）。
-    # system prompt 各部分（identity/bootstrap/memory/skills/history/notes 等）
+    # system prompt 各部分（identity/bootstrap/policy/skills 等）
     # 加起来不应超过此值，否则会挤占 user message 与 model 输出空间。
-    # 超出时按优先级丢弃/截断：notes → skills list → history → memory → ...
+    # 超出时按优先级丢弃/截断：skills list → skills active → summary → ...
     _MAX_INJECTION_TOKENS = 65_000
 
     # 优先级：数字越小越重要，越不容易被丢弃。
-    # CRITICAL（身份/bootstrap/tool_contract）永不丢弃；
-    # SUMMARY（归档 summary）高优先级保留——这是上下文连续性的关键；
-    # NOTES 最低优先级（临时 scratchpad，丢了能重建）。
+    # CRITICAL（身份/bootstrap/tool_contract/policy）永不丢弃；
+    # SUMMARY（归档 summary）高优先级保留——这是上下文连续性的关键。
+    # W10-C2：memory/history/notes 等动态段已移出 system prompt（冻结前缀），
+    # 不再参与此预算阶梯。
     _PRIORITY_CRITICAL = 0
     _PRIORITY_SUMMARY = 1
-    _PRIORITY_MEMORY = 2
-    _PRIORITY_SHARED_MEMORY = 2
-    _PRIORITY_HISTORY = 3
     _PRIORITY_SKILLS_ACTIVE = 4
     _PRIORITY_SKILLS_LIST = 5
     _PRIORITY_SUBAGENT = 5
-    _PRIORITY_NOTES = 6
 
     def __init__(
         self,
@@ -199,6 +196,27 @@ class ContextBuilder:
             "No structured memory facts were injected."
         )
 
+    def build_memory_context(self, workspace: Path | str | None = None) -> str:
+        """Build the session-memory snapshot: recent history rendered once.
+
+        The snapshot is stamped as the first session message (W10-C2 frozen
+        system prefix) so the system prompt stays byte-stable for prompt-cache
+        hits. It carries the content the former "Recent History" system
+        section held: unprocessed history.jsonl entries capped to the most
+        recent ``_MAX_RECENT_HISTORY`` entries and truncated to
+        ``_MAX_HISTORY_CHARS``. Returns ``""`` when nothing is pending so
+        callers can skip stamping empty snapshots.
+        """
+        root = Path(workspace) if workspace is not None else self.workspace
+        store = self.memory_for(root)
+        entries = store.read_unprocessed_history(since_cursor=store.get_last_dream_cursor())
+        if not entries:
+            return ""
+        capped = entries[-self._MAX_RECENT_HISTORY :]
+        history_text = "\n".join(f"- [{entry['timestamp']}] {entry['content']}" for entry in capped)
+        history_text = truncate_text(history_text, self._MAX_HISTORY_CHARS)
+        return "# Recent History\n\n" + history_text
+
     def build_system_prompt(
         self,
         skill_names: list[str] | None = None,
@@ -207,9 +225,6 @@ class ContextBuilder:
         workspace: Path | None = None,
         agent_override: SubagentDefinition | None = None,
         light_context: bool = False,
-        recall_query: str | None = None,
-        recall_session_key: str | None = None,
-        recall_user_key: str | None = None,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills.
 
@@ -218,8 +233,10 @@ class ContextBuilder:
         "Available Subagents" delegation list is omitted — the subagent runs
         as the primary identity for the turn.
 
-        Only POLICY.md plus the deterministic recall result
-        (when ``recall_query`` is given) are injected as durable memory.
+        Only POLICY.md is injected as durable memory. Dynamic sections
+        (structured recall, scratchpad notes, session snapshot) live outside
+        the system prompt so the prefix stays byte-stable for prompt-cache
+        hits (W10-C2 frozen system prefix).
         """
         # parts: list of (priority, content) tuples。
         # priority 数字越小越重要，越不容易被预算控制丢弃。
@@ -259,24 +276,6 @@ class ContextBuilder:
                 logger.warning("shared policy exceeds injection budget; not truncated")
             parts.append((self._PRIORITY_CRITICAL, f"# Shared Policy (Cross-Session)\n\n{policy}"))
 
-        if recall_query and not light_context:
-            recall_text = self._recall_section(
-                truncate_text(recall_query, 2000),
-                session_key=recall_session_key,
-                user_key=recall_user_key,
-                store=store,
-            )
-            if recall_text:
-                parts.append((self._PRIORITY_MEMORY, recall_text))
-
-        # 注入 notes.md（主 Agent 的 scratchpad，借鉴 MiMo Code）。
-        # 主 Agent 用 write_file/edit_file 往 notes.md append 零散发现，
-        # Consolidator 在归档时读取并清空。注入让主 Agent 能看到自己之前
-        # 记的笔记，支持跨 turn 的临时记忆。文件不存在或为空时跳过。
-        notes = store.read_notes()
-        if notes and notes.strip():
-            parts.append((self._PRIORITY_NOTES, f"# Scratchpad Notes (notes.md)\n\n{notes}"))
-
         always_skills = self.skills.get_always_skills()
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)
@@ -292,15 +291,6 @@ class ContextBuilder:
                 )
             )
 
-        entries = store.read_unprocessed_history(since_cursor=store.get_last_dream_cursor())
-        if entries:
-            capped = entries[-self._MAX_RECENT_HISTORY :]
-            history_text = "\n".join(
-                f"- [{entry['timestamp']}] {entry['content']}" for entry in capped
-            )
-            history_text = truncate_text(history_text, self._MAX_HISTORY_CHARS)
-            parts.append((self._PRIORITY_HISTORY, "# Recent History\n\n" + history_text))
-
         if session_summary:
             parts.append(
                 (self._PRIORITY_SUMMARY, f"[Archived Context Summary]\n\n{session_summary}")
@@ -315,8 +305,8 @@ class ContextBuilder:
                 parts.append((self._PRIORITY_SUBAGENT, subagent_section))
 
         # 按优先级分配 65K token 注入预算（借鉴 MiMo Code 的 rebuild budget）。
-        # 超出预算时按优先级从低到高丢弃/截断：NOTES → SKILLS_LIST/SUBAGENT →
-        # HISTORY → MEMORY → SUMMARY → CRITICAL（CRITICAL 永不丢弃）。
+        # 超出预算时按优先级从低到高丢弃/截断：SKILLS_LIST/SUBAGENT →
+        # SKILLS_ACTIVE → SUMMARY → CRITICAL（CRITICAL 永不丢弃）。
         parts = self._enforce_injection_budget(parts)
 
         return "\n\n---\n\n".join(p[1] for p in parts)
@@ -341,13 +331,14 @@ class ContextBuilder:
         策略：
         1. 计算总 token 估计，若未超预算直接返回。
         2. 超预算时，从最低优先级开始处理：
-           - 优先级 >= _PRIORITY_NOTES（6）：直接丢弃（notes/subagent 列表）
            - 优先级 == _PRIORITY_SKILLS_LIST（5）：直接丢弃（skills 列表/subagent）
-           - 优先级 == _PRIORITY_HISTORY（3）：截断到剩余预算的 50%
-           - 优先级 == _PRIORITY_MEMORY（2）：截断到剩余预算的 30%
+           - 优先级 == _PRIORITY_SKILLS_ACTIVE（4）：截断到剩余预算的 30%
            - 优先级 == _PRIORITY_SUMMARY（1）：截断到剩余预算的 80%
            - 优先级 == _PRIORITY_CRITICAL（0）：永不丢弃
         3. 每次处理后重新计算总量，达标即停。
+
+        W10-C2：memory/history/notes 等动态段已移出 system prompt，不再进入
+        此预算阶梯。
         """
         budget = cls._MAX_INJECTION_TOKENS
 
@@ -358,53 +349,14 @@ class ContextBuilder:
             return parts
 
         # 按优先级从低到高处理（数字大的先处理）
-        # 第 1 步：丢弃所有 NOTES（最低优先级，临时内容）
-        parts = [p for p in parts if p[0] != cls._PRIORITY_NOTES]
-        if total_tokens() <= budget:
-            return parts
-
-        # 第 2 步：丢弃所有 SKILLS_LIST 和 SUBAGENT（列表性质，可重建）
+        # 第 1 步：丢弃所有 SKILLS_LIST 和 SUBAGENT（列表性质，可重建）
         parts = [
             p for p in parts if p[0] not in (cls._PRIORITY_SKILLS_LIST, cls._PRIORITY_SUBAGENT)
         ]
         if total_tokens() <= budget:
             return parts
 
-        # 第 3 步：截断 HISTORY 到剩余预算的 50%
-        remaining = budget - sum(
-            cls._estimate_tokens(p[1]) for p in parts if p[0] != cls._PRIORITY_HISTORY
-        )
-        history_quota = max(2000, remaining // 2)
-        new_parts: list[tuple[int, str]] = []
-        for p in parts:
-            if p[0] == cls._PRIORITY_HISTORY:
-                truncated = truncate_text(p[1], history_quota * 4)
-                new_parts.append((p[0], truncated))
-            else:
-                new_parts.append(p)
-        parts = new_parts
-        if total_tokens() <= budget:
-            return parts
-
-        # 第 4 步：截断 MEMORY/SHARED_MEMORY 到剩余预算的 30%
-        remaining = budget - sum(
-            cls._estimate_tokens(p[1])
-            for p in parts
-            if p[0] not in (cls._PRIORITY_MEMORY, cls._PRIORITY_SHARED_MEMORY)
-        )
-        memory_quota = max(1500, (remaining * 3) // 10)
-        new_parts = []
-        for p in parts:
-            if p[0] in (cls._PRIORITY_MEMORY, cls._PRIORITY_SHARED_MEMORY):
-                truncated = truncate_text(p[1], memory_quota * 4)
-                new_parts.append((p[0], truncated))
-            else:
-                new_parts.append(p)
-        parts = new_parts
-        if total_tokens() <= budget:
-            return parts
-
-        # 第 5 步：截断 SKILLS_ACTIVE 到剩余预算的 30%
+        # 第 2 步之后：截断 SKILLS_ACTIVE 到剩余预算的 30%
         remaining = budget - sum(
             cls._estimate_tokens(p[1]) for p in parts if p[0] != cls._PRIORITY_SKILLS_ACTIVE
         )
@@ -420,7 +372,7 @@ class ContextBuilder:
         if total_tokens() <= budget:
             return parts
 
-        # 第 6 步：截断 SUMMARY 到剩余预算的 80%（summary 是上下文连续性关键）
+        # 第 3 步：截断 SUMMARY 到剩余预算的 80%（summary 是上下文连续性关键）
         remaining = budget - sum(
             cls._estimate_tokens(p[1]) for p in parts if p[0] != cls._PRIORITY_SUMMARY
         )
@@ -581,15 +533,8 @@ class ContextBuilder:
             supplemental_lines=extra or None,
         )
         user_content = self._build_user_content(current_message, media)
+        store = self.memory_for(root)
 
-        # Merge runtime context and user content into a single user message
-        # to avoid consecutive same-role messages that some providers reject.
-        # Runtime context is appended to keep the user-content prefix stable
-        # for prompt-cache hits (the context changes every turn due to time).
-        if isinstance(user_content, str):
-            merged = f"{user_content}\n\n{runtime_ctx}"
-        else:
-            merged = user_content + [{"type": "text", "text": runtime_ctx}]
         # light_context 从 runtime_state 读取(由 AgentLoop 设置,用于心跳等轻量场景)
         light_context = (
             bool(getattr(runtime_state, "_light_context", False)) if runtime_state else False
@@ -602,6 +547,41 @@ class ContextBuilder:
         else:
             recall_user_id = sender_id if sender_id != "subagent" else None
             recall_user_key = f"user:{recall_user_id}" if recall_user_id else "user:default"
+
+        # Dynamic prompt sections (structured recall, scratchpad notes) moved
+        # out of the system prefix to the tail of the current user message so
+        # the system prompt stays byte-stable for prompt-cache hits (W10-C2).
+        # Subagent resume turns skip them along with the runtime context.
+        dynamic_blocks: list[str] = []
+        if not skip_runtime_lines:
+            if recall_query and not light_context:
+                recall_text = self._recall_section(
+                    truncate_text(recall_query, 2000),
+                    session_key=session_key,
+                    user_key=recall_user_key,
+                    store=store,
+                )
+                if recall_text:
+                    dynamic_blocks.append(recall_text)
+            notes = store.read_notes()
+            if notes and notes.strip():
+                dynamic_blocks.append(f"# Scratchpad Notes (notes.md)\n\n{notes}")
+
+        # Merge runtime context and user content into a single user message
+        # to avoid consecutive same-role messages that some providers reject.
+        # Everything dynamic is appended after the user content so the
+        # user-content prefix stays stable for prompt-cache hits.
+        if isinstance(user_content, str):
+            merged = "\n\n".join(
+                block for block in (user_content, *dynamic_blocks, runtime_ctx) if block
+            )
+        else:
+            merged = (
+                user_content
+                + [{"type": "text", "text": block} for block in dynamic_blocks if block]
+                + [{"type": "text", "text": runtime_ctx}]
+            )
+
         messages = [
             {
                 "role": "system",
@@ -612,9 +592,6 @@ class ContextBuilder:
                     workspace=root,
                     agent_override=agent_override,
                     light_context=light_context,
-                    recall_query=recall_query,
-                    recall_session_key=session_key,
-                    recall_user_key=recall_user_key,
                 ),
             },
             *history,
