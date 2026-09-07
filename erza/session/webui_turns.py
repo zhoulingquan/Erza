@@ -322,6 +322,11 @@ class WebuiTurnCoordinator:
                 "completion_tokens": context_usage.get("completion_tokens", 0),
                 "total_tokens": context_usage.get("total_tokens", 0),
                 "cached_tokens": context_usage.get("cached_tokens", 0),
+                "cache_hit_ratio": round(
+                    context_usage.get("cached_tokens", 0)
+                    / max(1, context_usage.get("prompt_tokens", 0)),
+                    4,
+                ),
             }
         session = self.sessions.get_or_create(session_key)
         turn_metadata["goal_state"] = goal_state_ws_blob(session.metadata)

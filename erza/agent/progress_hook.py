@@ -170,11 +170,13 @@ class AgentProgressHook(AgentHook):
                     tool_events=tool_events,
                 )
         u = context.usage or {}
+        prompt_tokens = u.get("prompt_tokens", 0)
         logger.debug(
-            "LLM usage: prompt={} completion={} cached={}",
-            u.get("prompt_tokens", 0),
+            "LLM usage: prompt={} completion={} cached={} ratio={:.2f}",
+            prompt_tokens,
             u.get("completion_tokens", 0),
             u.get("cached_tokens", 0),
+            u.get("cached_tokens", 0) / max(1, prompt_tokens),
         )
 
     def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:

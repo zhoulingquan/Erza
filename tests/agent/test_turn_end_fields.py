@@ -75,7 +75,10 @@ class TestTurnEndFields:
         assert isinstance(event.metadata["latency_ms"], int)
         assert "goal_state" in event.metadata
         # Field lock: context_usage mirrors the current turn's last call.
-        assert event.metadata["context_usage"] == _usage(10, 5, 3)
+        assert event.metadata["context_usage"] == {
+            **_usage(10, 5, 3),
+            "cache_hit_ratio": 0.3,
+        }
 
     @pytest.mark.asyncio
     async def test_turn_end_after_final_content_message(self, tmp_path: Path) -> None:
@@ -149,4 +152,7 @@ class TestTurnEndFields:
         outbound = await _drain(bus)
         turn_end = [m for m in outbound if m.metadata.get("_turn_end")]
         assert len(turn_end) == 1
-        assert turn_end[0].metadata["context_usage"] == _usage(10, 5, 3)
+        assert turn_end[0].metadata["context_usage"] == {
+            **_usage(10, 5, 3),
+            "cache_hit_ratio": 0.3,
+        }

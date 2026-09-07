@@ -43,6 +43,8 @@ class TurnBudget:
         max_iterations:   Optional override for spec.max_iterations. None = use spec.
         used_input:        Cumulative input tokens consumed so far.
         used_output:       Cumulative output tokens consumed so far.
+        used_cache_hit:    Cumulative cache-hit (cached_tokens) tokens so far.
+        used_cache_miss:   Cumulative cache-miss input tokens so far.
         used_cost:         Cumulative cost in USD (only if pricing provided).
         pricing:           Optional dict mapping model name -> (input_per_1k, output_per_1k).
     """
@@ -53,6 +55,8 @@ class TurnBudget:
     max_iterations: int | None = None
     used_input: int = 0
     used_output: int = 0
+    used_cache_hit: int = 0
+    used_cache_miss: int = 0
     used_cost: float = 0.0
     pricing: dict[str, tuple[float, float]] | None = None
     require_cost_tracking: bool = False
@@ -63,19 +67,28 @@ class TurnBudget:
         """Add one LLM call's usage to the running totals.
 
         Optional keys recognized: prompt_tokens, completion_tokens,
-        total_tokens, cost_usd, prompt_cache_hit_tokens,
+        total_tokens, cost_usd, cached_tokens, prompt_cache_hit_tokens,
         prompt_cache_miss_tokens.
         """
         prompt = int(usage.get("prompt_tokens", 0) or 0)
         completion = int(usage.get("completion_tokens", 0) or 0)
+        # Normalized cache-hit key across providers (see provider usage
+        # extraction): DeepSeek/SiliconFlow hit tokens land here too.
+        cache_hit = int(usage.get("cached_tokens", 0) or 0)
         # Some providers report cache stats separately; count cache misses
         # toward input consumption (cache hits are ~free).
-        cache_hit = int(usage.get("prompt_cache_hit_tokens", 0) or 0)
-        if cache_hit > 0 and prompt == 0:
-            cache_miss = int(usage.get("prompt_cache_miss_tokens", 0) or 0)
-            prompt = cache_miss
+        separate_hit = int(usage.get("prompt_cache_hit_tokens", 0) or 0)
+        if separate_hit > 0 and prompt == 0:
+            # DeepSeek-style split reporting: hit/miss replace prompt_tokens.
+            prompt = int(usage.get("prompt_cache_miss_tokens", 0) or 0)
+            cache_hit = separate_hit
+            cache_miss = prompt
+        else:
+            cache_miss = max(prompt - cache_hit, 0)
         self.used_input += prompt
         self.used_output += completion
+        self.used_cache_hit += cache_hit
+        self.used_cache_miss += cache_miss
 
         # Cost tracking: prefer explicit cost_usd if provider reports it
         cost = usage.get("cost_usd")
@@ -117,11 +130,21 @@ class TurnBudget:
             return self.exceeded_reason
         return None
 
+    def cache_hit_ratio(self) -> float | None:
+        """Return cached/(cached+miss) ratio, or None when no input recorded."""
+        denominator = self.used_cache_hit + self.used_cache_miss
+        if denominator <= 0:
+            return None
+        return self.used_cache_hit / denominator
+
     def summary(self) -> str:
         """Human-readable one-line summary for logs/UI."""
         parts = [f"in={self.used_input}", f"out={self.used_output}"]
         if self.max_cost_usd is not None:
             parts.append(f"cost=${self.used_cost:.4f}")
+        ratio = self.cache_hit_ratio()
+        if ratio is not None:
+            parts.append(f"cache={round(ratio * 100)}%")
         if self.exceeded_reason:
             parts.append(f"BUDGET_EXCEEDED({self.exceeded_reason})")
         return " ".join(parts)

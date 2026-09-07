@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from erza.ledger.turn_budget import TurnBudget
 from erza.providers.openai_compat_provider import OpenAICompatProvider
 
 
@@ -195,3 +196,28 @@ def test_extract_usage_priority_nested_over_top_level_dict():
     }
     result = p._parse(response)
     assert result.usage["cached_tokens"] == 100
+
+
+# --- contract: normalized cached_tokens must feed TurnBudget ---
+
+
+def test_extract_usage_output_feeds_turn_budget_cache_hit():
+    """Lock the accounting-key contract: whatever _extract_usage normalizes
+    into ``cached_tokens`` must be consumed by TurnBudget.accumulate."""
+    p = _provider()
+    response = {
+        "choices": [_DICT_CHOICE],
+        "usage": {
+            "prompt_tokens": 2000,
+            "completion_tokens": 300,
+            "total_tokens": 2300,
+            "prompt_cache_hit_tokens": 1500,
+        },
+    }
+    usage = p._parse(response).usage
+    assert usage["cached_tokens"] == 1500
+    budget = TurnBudget()
+    budget.accumulate(usage, "test-model")
+    assert budget.used_cache_hit == 1500
+    assert budget.used_input == 2000
+    assert budget.cache_hit_ratio() == 0.75

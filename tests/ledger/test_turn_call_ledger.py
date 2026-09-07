@@ -163,6 +163,7 @@ class TestTurnCallLedger:
             "completion_tokens": 5,
             "total_tokens": 0,
             "cached_tokens": 0,
+            "cache_hit_ratio": 0.0,
         }
         assert provider._call_count == 2
 
@@ -548,3 +549,63 @@ class TestTurnCallLedger:
             await asyncio.gather(*runner._planning._reflection_tasks)
 
         assert ledger.purpose_usage["reflection"] == _usage(4, 2)
+
+
+class TestTurnBudgetCacheHitRatio:
+    """TurnBudget cache-hit accounting: hit key must be ``cached_tokens``."""
+
+    def test_accumulate_reads_normalized_cached_tokens_key(self) -> None:
+        budget = TurnBudget()
+        budget.accumulate(
+            {"prompt_tokens": 1000, "completion_tokens": 10, "cached_tokens": 800},
+            "m",
+        )
+        assert budget.used_cache_hit == 800
+        assert budget.used_input == 1000
+        assert budget.cache_hit_ratio() == 0.8
+
+    def test_cache_hit_ratio_weighted_across_calls(self) -> None:
+        budget = TurnBudget()
+        budget.accumulate(
+            {"prompt_tokens": 1000, "completion_tokens": 10, "cached_tokens": 800},
+            "m",
+        )
+        budget.accumulate(
+            {"prompt_tokens": 1000, "completion_tokens": 10, "cached_tokens": 200},
+            "m",
+        )
+        assert budget.used_cache_hit == 1000
+        assert budget.used_input == 2000
+        assert budget.cache_hit_ratio() == 0.5
+
+    def test_cache_hit_ratio_none_without_input(self) -> None:
+        budget = TurnBudget()
+        assert budget.cache_hit_ratio() is None
+        budget.accumulate({"completion_tokens": 10}, "m")
+        assert budget.cache_hit_ratio() is None
+        assert "cache=" not in budget.summary()
+
+    def test_summary_contains_cache_segment_on_hit(self) -> None:
+        budget = TurnBudget()
+        budget.accumulate(
+            {"prompt_tokens": 1000, "completion_tokens": 10, "cached_tokens": 800},
+            "m",
+        )
+        summary = budget.summary()
+        assert "cache=" in summary
+        assert "%" in summary
+
+    def test_deepseek_split_cache_report_counts_miss_as_input(self) -> None:
+        budget = TurnBudget()
+        budget.accumulate(
+            {
+                "prompt_tokens": 0,
+                "prompt_cache_hit_tokens": 300,
+                "prompt_cache_miss_tokens": 100,
+                "completion_tokens": 5,
+            },
+            "m",
+        )
+        assert budget.used_input == 100
+        assert budget.used_cache_hit == 300
+        assert budget.cache_hit_ratio() == 0.75
