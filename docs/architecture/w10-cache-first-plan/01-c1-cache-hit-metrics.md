@@ -34,17 +34,23 @@
    注意保留既有"cache stats 单独上报时 miss 计入 input"的语义：DeepSeek 风格
    `prompt_tokens` 为 0 且 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` 分列时，
    `prompt = cache_miss`——这段逻辑不动，只把命中累计的键改对。
-2. 新增字段 `used_cache_hit: int = 0`（dataclass 字段，`accumulate` 里从
-   `cached_tokens` 累加；上述单独上报分支里从 `prompt_cache_hit_tokens` 累加）。
+2. 新增字段 `used_cache_hit: int = 0` 与 `used_cache_miss: int = 0`（dataclass 字段，
+   `accumulate` 里分别累加：归一化路径 `cached_tokens` 与 `max(prompt - cached, 0)`；
+   DeepSeek 分列上报分支 `prompt_cache_hit_tokens` 与 miss）。
 3. 新增方法：
 
 ```python
 def cache_hit_ratio(self) -> float | None:
     """Return cached/(cached+miss) ratio, or None when no input recorded."""
-    if self.used_input <= 0:
+    denominator = self.used_cache_hit + self.used_cache_miss
+    if denominator <= 0:
         return None
-    return self.used_cache_hit / self.used_input
+    return self.used_cache_hit / denominator
 ```
+
+   （实施勘误：初稿片段以 `used_input` 为分母，与测试 5 的分列口径 0.75 矛盾——
+   归一化主路径两式恒等，仅分列上报场景不同；C1 实施按 docstring 语义
+   补 `used_cache_miss` 累加器解决。）
 
 4. `summary()` 输出追加 `cache=NN%` 段（`ratio is None` 时不追加）。
 

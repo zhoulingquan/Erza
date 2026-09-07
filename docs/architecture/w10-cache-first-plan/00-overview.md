@@ -2,8 +2,11 @@
 
 > 状态：方案定稿，待分批实施（Cline）。
 > 基线：`pytest tests/ -q` → **4005 passed / 3 failed / 29 skipped**（3 个失败均为
-> `tests/agent/test_tool_hint.py` 的既有问题，与本系列无关，见第五节验证门）；
-> ruff 零告警。
+> `tests/agent/test_tool_hint.py` 的既有问题，与本系列无关，见第五节验证门）。
+> `ruff check erza/` 零告警（勘误：初稿误记基线"ruff 零告警"，实存
+> `web_fetch_api.py` 两个既有违规，C1 实施时发现并已单独提交修复；
+> `ruff format` 基线另有 11 个冷文件未格式化——保持原样不整治，
+> 验证门的 format 检查只约束本批改动文件）。
 > 建议实施前打 tag：`git tag -a baseline-pre-w10 -m "W9 收官基线，W10 缓存优先系列起点"`。
 
 ## 一、背景：为什么做这个
@@ -86,8 +89,12 @@ C4 与 C2/C3 改不同文件但共享 turn_orchestrator.py，放最后避免冲�
 ```
 .venv\Scripts\python.exe -m pytest tests/ -q        # 见下方基线口径
 .venv\Scripts\python.exe -m ruff check erza/         # 零输出
-.venv\Scripts\python.exe -m ruff format --check erza/
+.venv\Scripts\python.exe -m ruff format --check <本批改动过的 erza/ 源文件>   # 零输出
 ```
+
+format 门只约束本批改动文件：仓库既有 11 个冷文件基线即未格式化
+（与 web_fetch_api.py 的 2 个 check 违规不同，那两个已修复），
+不在本系列整治范围，**禁止顺手格式化冷文件**。
 
 **pytest 基线口径**（2026-09-07 实跑）：4005 passed / 3 failed / 29 skipped。
 3 个失败全部位于 `tests/agent/test_tool_hint.py`（路径缩写与长度断言，工作区路径

@@ -60,7 +60,7 @@
 4. 验证门（全部通过才算完成，未过不得 commit）——**必须用项目 venv 的 Python 3.12**：
    - `.venv\Scripts\python.exe -m pytest tests/ -q` → passed ≥ 4005，failed 集合**恰好等于** `tests/agent/test_tool_hint.py` 的 3 个既有失败（路径缩写相关、与本系列无关的已知问题）——除此之外任何新失败都算不过
    - `.venv\Scripts\python.exe -m ruff check erza/` → 零输出
-   - `.venv\Scripts\python.exe -m ruff format --check erza/` → 零输出
+   - `.venv\Scripts\python.exe -m ruff format --check <本批改动过的 erza/ 源文件>` → 零输出（format 门只查本批改动文件；仓库另有 11 个冷文件基线即未格式化，与本系列无关，**禁止顺手格式化**）
    - 警告：不要用系统默认 python（3.10，缺 typing.Self，收集阶段会报 ImportError，那是环境问题不是代码问题）
 5. 按明确路径 `git add` 后 commit
 6. 输出批次报告（格式见下）

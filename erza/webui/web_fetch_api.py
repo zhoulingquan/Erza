@@ -16,7 +16,6 @@ from erza.config.loader import load_config, save_config
 from ._query import QueryParams, _query_first_alias
 from ._runtime import WebUISettingsError
 
-
 # === Payload builder ===
 
 
