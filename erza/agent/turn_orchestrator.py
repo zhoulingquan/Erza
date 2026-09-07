@@ -100,7 +100,6 @@ class TurnContext:
     on_retry_wait: Callable[[str], Awaitable[None]] | None = None
 
     pending_queue: asyncio.Queue | None = None
-    pending_summary: str | None = None
     turn_wall_started_at: float = field(default_factory=time.time)
     turn_latency_ms: int | None = None
 
@@ -342,10 +341,11 @@ class TurnOrchestrator:
     # -- COMPACT --------------------------------------------------------------
 
     async def _state_compact(self, ctx: TurnContext) -> str:
-        ctx.session, pending = self._deps.resources.auto_compact.prepare_session(
+        # W10-C3：prepare_session 只负责归档/过期时的会话重载；摘要已在
+        # 空闲压缩时以消息形式插入会话日志，随 get_history 重放。
+        ctx.session = self._deps.resources.auto_compact.prepare_session(
             ctx.session, ctx.session_key
         )
-        ctx.pending_summary = pending
         return "ok"
 
     # -- COMMAND --------------------------------------------------------------
@@ -411,7 +411,6 @@ class TurnOrchestrator:
             ctx.msg,
             ctx.session,
             ctx.history,
-            ctx.pending_summary,
             agent_override=ctx.agent_override,
         )
         ctx.user_persisted_early = self._deps.session_turn._persist_user_message_early(

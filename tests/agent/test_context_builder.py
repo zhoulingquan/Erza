@@ -275,16 +275,26 @@ class TestBuildSystemPrompt:
         result = builder.build_system_prompt()
         assert "Be helpful and concise." in result
 
-    def test_includes_session_summary(self, tmp_path):
+    def test_summary_replayed_from_history_not_system_prompt(self, tmp_path):
+        """W10-C3: archived summaries are user messages in history, not prompt sections."""
         builder = _builder(tmp_path)
-        result = builder.build_system_prompt(session_summary="Previous chat about Python.")
-        assert "Previous chat about Python." in result
-        assert "[Archived Context Summary]" in result
+        history = [
+            {
+                "role": "user",
+                "content": "[Archived Context Summary]\n\nEarlier chat about Python.",
+                "_archived_summary": True,
+            },
+        ]
+        messages = builder.build_messages(history, "continue")
+        joined = "\n".join(str(m["content"]) for m in messages)
+        assert "Earlier chat about Python." in joined
+        # And the system prompt itself must not carry a summary section anymore.
+        assert "[Archived Context Summary]" not in builder.build_system_prompt()
 
     def test_sections_separated_by_separator(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Rules.", encoding="utf-8")
         builder = _builder(tmp_path)
-        result = builder.build_system_prompt(session_summary="Summary.")
+        result = builder.build_system_prompt()
         assert "\n\n---\n\n" in result
 
     def test_no_bootstrap_no_summary(self, tmp_path):
@@ -303,13 +313,14 @@ class TestEnforceInjectionBudget:
     """65K token injection budget: drop/truncate by priority ladder.
 
     W10-C2: dynamic sections (memory/history/notes) no longer live in the
-    system prompt, so the ladder only guards CRITICAL/SKILLS/SUMMARY.
+    system prompt. W10-C3: the SUMMARY section was removed as well, so the
+    ladder only guards CRITICAL/SKILLS.
     """
 
     def test_under_budget_unchanged(self):
         parts = [
             (ContextBuilder._PRIORITY_CRITICAL, "identity"),
-            (ContextBuilder._PRIORITY_SUMMARY, "archived summary"),
+            (ContextBuilder._PRIORITY_SKILLS_ACTIVE, "active skills"),
         ]
         result = ContextBuilder._enforce_injection_budget(parts)
         assert len(result) == 2
@@ -319,7 +330,7 @@ class TestEnforceInjectionBudget:
         big_blob = "x" * 300_000  # ~75K tokens
         parts = [
             (ContextBuilder._PRIORITY_CRITICAL, "identity"),
-            (ContextBuilder._PRIORITY_SUMMARY, big_blob),
+            (ContextBuilder._PRIORITY_SKILLS_ACTIVE, big_blob),
             (ContextBuilder._PRIORITY_SKILLS_LIST, "skills summary"),
             (ContextBuilder._PRIORITY_SUBAGENT, "subagent list"),
         ]
@@ -327,18 +338,7 @@ class TestEnforceInjectionBudget:
         priorities = {p[0] for p in result}
         assert ContextBuilder._PRIORITY_SKILLS_LIST not in priorities
         assert ContextBuilder._PRIORITY_SUBAGENT not in priorities
-        assert ContextBuilder._PRIORITY_SUMMARY in priorities
-
-    def test_summary_truncated_not_dropped(self):
-        big_blob = "x" * 300_000
-        parts = [
-            (ContextBuilder._PRIORITY_CRITICAL, "identity"),
-            (ContextBuilder._PRIORITY_SUMMARY, big_blob),
-        ]
-        result = ContextBuilder._enforce_injection_budget(parts)
-        summary_parts = [p for p in result if p[0] == ContextBuilder._PRIORITY_SUMMARY]
-        assert len(summary_parts) == 1
-        assert len(summary_parts[0][1]) < len(big_blob)
+        assert ContextBuilder._PRIORITY_SKILLS_ACTIVE in priorities
 
     def test_skills_active_truncated_not_dropped(self):
         big_skills = "s" * 300_000
@@ -355,7 +355,7 @@ class TestEnforceInjectionBudget:
         big_blob = "x" * 1_000_000  # ~250K tokens
         parts = [
             (ContextBuilder._PRIORITY_CRITICAL, big_blob),
-            (ContextBuilder._PRIORITY_SUMMARY, "summary"),
+            (ContextBuilder._PRIORITY_SKILLS_ACTIVE, "active skills"),
         ]
         result = ContextBuilder._enforce_injection_budget(parts)
         critical_parts = [p for p in result if p[0] == ContextBuilder._PRIORITY_CRITICAL]

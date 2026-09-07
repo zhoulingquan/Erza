@@ -75,16 +75,14 @@ class ContextBuilder:
     # 总注入预算上限（借鉴 MiMo Code 的 65K rebuild budget）。
     # system prompt 各部分（identity/bootstrap/policy/skills 等）
     # 加起来不应超过此值，否则会挤占 user message 与 model 输出空间。
-    # 超出时按优先级丢弃/截断：skills list → skills active → summary → ...
+    # 超出时按优先级丢弃/截断：skills list → skills active → ...
     _MAX_INJECTION_TOKENS = 65_000
 
     # 优先级：数字越小越重要，越不容易被丢弃。
-    # CRITICAL（身份/bootstrap/tool_contract/policy）永不丢弃；
-    # SUMMARY（归档 summary）高优先级保留——这是上下文连续性的关键。
+    # CRITICAL（身份/bootstrap/tool_contract/policy）永不丢弃。
     # W10-C2：memory/history/notes 等动态段已移出 system prompt（冻结前缀），
-    # 不再参与此预算阶梯。
+    # 不再参与此预算阶梯；W10-C3：归档 summary 也移出（以消息形式重放）。
     _PRIORITY_CRITICAL = 0
-    _PRIORITY_SUMMARY = 1
     _PRIORITY_SKILLS_ACTIVE = 4
     _PRIORITY_SKILLS_LIST = 5
     _PRIORITY_SUBAGENT = 5
@@ -221,7 +219,6 @@ class ContextBuilder:
         self,
         skill_names: list[str] | None = None,
         channel: str | None = None,
-        session_summary: str | None = None,
         workspace: Path | None = None,
         agent_override: SubagentDefinition | None = None,
         light_context: bool = False,
@@ -291,11 +288,6 @@ class ContextBuilder:
                 )
             )
 
-        if session_summary:
-            parts.append(
-                (self._PRIORITY_SUMMARY, f"[Archived Context Summary]\n\n{session_summary}")
-            )
-
         # Inject available declarative subagents (TRAE-style auto-delegation).
         # Skip in takeover mode — a subagent running as the primary identity
         # should not delegate to other subagents.
@@ -306,7 +298,7 @@ class ContextBuilder:
 
         # 按优先级分配 65K token 注入预算（借鉴 MiMo Code 的 rebuild budget）。
         # 超出预算时按优先级从低到高丢弃/截断：SKILLS_LIST/SUBAGENT →
-        # SKILLS_ACTIVE → SUMMARY → CRITICAL（CRITICAL 永不丢弃）。
+        # SKILLS_ACTIVE → CRITICAL（CRITICAL 永不丢弃）。
         parts = self._enforce_injection_budget(parts)
 
         return "\n\n---\n\n".join(p[1] for p in parts)
@@ -333,7 +325,6 @@ class ContextBuilder:
         2. 超预算时，从最低优先级开始处理：
            - 优先级 == _PRIORITY_SKILLS_LIST（5）：直接丢弃（skills 列表/subagent）
            - 优先级 == _PRIORITY_SKILLS_ACTIVE（4）：截断到剩余预算的 30%
-           - 优先级 == _PRIORITY_SUMMARY（1）：截断到剩余预算的 80%
            - 优先级 == _PRIORITY_CRITICAL（0）：永不丢弃
         3. 每次处理后重新计算总量，达标即停。
 
@@ -372,19 +363,6 @@ class ContextBuilder:
         if total_tokens() <= budget:
             return parts
 
-        # 第 3 步：截断 SUMMARY 到剩余预算的 80%（summary 是上下文连续性关键）
-        remaining = budget - sum(
-            cls._estimate_tokens(p[1]) for p in parts if p[0] != cls._PRIORITY_SUMMARY
-        )
-        summary_quota = max(1000, (remaining * 4) // 5)
-        new_parts = []
-        for p in parts:
-            if p[0] == cls._PRIORITY_SUMMARY:
-                truncated = truncate_text(p[1], summary_quota * 4)
-                new_parts.append((p[0], truncated))
-            else:
-                new_parts.append(p)
-        parts = new_parts
         # CRITICAL 永不丢弃；若仍超预算只能接受（说明 bootstrap 文件本身就超大，
         # 用户应自行精简 SOUL.md/AGENTS.md）
         return parts
@@ -500,7 +478,6 @@ class ContextBuilder:
         sender_id: str | None = None,
         session_key: str | None = None,
         memory_user_key: str | None = None,
-        session_summary: str | None = None,
         session_metadata: Mapping[str, Any] | None = None,
         current_runtime_lines: Sequence[str] | None = None,
         workspace: Path | None = None,
@@ -588,7 +565,6 @@ class ContextBuilder:
                 "content": self.build_system_prompt(
                     skill_names,
                     channel=channel,
-                    session_summary=session_summary,
                     workspace=root,
                     agent_override=agent_override,
                     light_context=light_context,

@@ -226,9 +226,11 @@ class TestConsolidatorTokenBudget:
         archived_chunk = consolidator.archive.await_args.args[0]
         assert [m["role"] for m in archived_chunk] == ["user", "assistant", "tool"]
         assert session.last_consolidated == 3
-        assert session.get_history(max_messages=2) == [
-            {"role": "assistant", "content": "final answer"}
-        ]
+        # W10-C3：回放以持久化摘要消息开头，其后是保留的最终回答
+        history = session.get_history(max_messages=2)
+        assert [m["role"] for m in history] == ["user", "assistant"]
+        assert "tool turn summary" in history[0]["content"]
+        assert history[1]["content"] == "final answer"
 
     async def test_large_chunk_archived_without_cap(self, consolidator):
         """Without chunk cap, the full range from pick_consolidation_boundary is archived."""
@@ -371,8 +373,16 @@ class TestCompactIdleSession:
         assert result == "Summary of old conversation."
 
         reloaded = sessions.get_or_create("cli:test")
-        assert len(reloaded.messages) <= 8
+        # W10-C3: kept suffix (≤8) plus one replayed summary message.
+        assert len(reloaded.messages) <= 9
         assert reloaded.last_consolidated == 0
+        # messages[0] is the persisted summary message (replayed by get_history)
+        summary_msg = reloaded.messages[0]
+        assert summary_msg.get("_archived_summary") is True
+        assert "Summary of old conversation." in summary_msg["content"]
+        # verbatim_recent 拼接进入摘要消息（§3.1-4）
+        assert "Recent user messages (verbatim):" in summary_msg["content"]
+        assert "user msg 19" in summary_msg["content"]
         meta = reloaded.metadata.get("_last_summary")
         assert meta is not None
         assert meta["text"] == "Summary of old conversation."
@@ -583,8 +593,9 @@ class TestConsolidatorSessionRefresh:
         await consolidator.maybe_consolidate_by_tokens(old_ref)
 
         session_after = sessions.get_or_create("cli:test")
-        # Messages should still be truncated (not restored to 40)
-        assert len(session_after.messages) <= 8
+        # Messages should still be truncated (not restored to 40);
+        # W10-C3: plus one replayed summary message at the head.
+        assert len(session_after.messages) <= 9
 
 
 class TestRawArchiveTruncation:
@@ -599,6 +610,97 @@ class TestRawArchiveTruncation:
         assert len(entries) == 1
         assert len(entries[0]["content"]) < 50_000
         assert "[RAW]" in entries[0]["content"]
+
+
+class TestSummaryMessageInsertion:
+    """W10-C3 §3.1：token 归档路径同样把摘要作为持久化消息插入 cursor 位置。"""
+
+    def _make_consolidator(self, store, mock_provider):
+        from erza.session.manager import SessionManager
+
+        mock_provider.generation.max_tokens = 4096
+        sessions = SessionManager(store.workspace)
+        return Consolidator(
+            store=store,
+            provider=mock_provider,
+            model="test-model",
+            sessions=sessions,
+            context_window_tokens=2000,
+            build_messages=MagicMock(return_value=[]),
+            get_tool_definitions=MagicMock(return_value=[]),
+            max_completion_tokens=100,
+        )
+
+    @pytest.mark.asyncio
+    async def test_maybe_consolidate_inserts_summary_at_cursor(
+        self, store, mock_provider
+    ):
+        """一轮归档后 messages[last_consolidated] 为摘要消息，get_history 回放首条即摘要。"""
+        mock_provider.chat_with_retry.return_value = MagicMock(
+            content="Summary of overflow.", finish_reason="stop"
+        )
+        consolidator = self._make_consolidator(store, mock_provider)
+        sessions = consolidator.sessions
+        session = sessions.get_or_create("cli:test")
+        for i in range(6):
+            session.add_message("user", f"user msg {i}")
+            session.add_message("assistant", f"assistant msg {i}")
+        sessions.save(session)
+
+        # budget=2000-100-1024=876 → checkpoint=613, target=438；
+        # 首次估算 900 触发归档，归档后 100 低于 target 退出循环。
+        estimates = iter([(900, "test"), (100, "test")])
+        consolidator.estimate_session_prompt_tokens = lambda _s, _it=estimates: next(  # type: ignore[method-assign]
+            _it, (100, "test")
+        )
+
+        await consolidator.maybe_consolidate_by_tokens(session)
+
+        reloaded = sessions.get_or_create("cli:test")
+        assert reloaded.last_consolidated > 0
+        cursor_msg = reloaded.messages[reloaded.last_consolidated]
+        assert cursor_msg.get("_archived_summary") is True
+        assert "Summary of overflow." in cursor_msg["content"]
+        # get_history 回放以摘要消息开头（自定义标记不进入回放 dict，
+        # 以 role=user + 摘要内容识别）
+        history = reloaded.get_history()
+        assert history[0]["role"] == "user"
+        assert "Summary of overflow." in str(history[0]["content"])
+
+    @pytest.mark.asyncio
+    async def test_two_rounds_insert_two_summary_messages(
+        self, store, mock_provider
+    ):
+        """两轮归档：两条摘要消息先后存在，cursor 恰好起于最新摘要。"""
+        mock_provider.chat_with_retry.side_effect = [
+            MagicMock(content="First summary.", finish_reason="stop"),
+            MagicMock(content="Second summary.", finish_reason="stop"),
+        ]
+        consolidator = self._make_consolidator(store, mock_provider)
+        sessions = consolidator.sessions
+        session = sessions.get_or_create("cli:test")
+        # 大消息确保每轮都有可用的 user 边界
+        for i in range(4):
+            session.add_message("user", "u" * 2000)
+            session.add_message("assistant", "a" * 2000)
+        sessions.save(session)
+
+        estimates = iter([(900, "test"), (800, "test"), (100, "test")])
+        consolidator.estimate_session_prompt_tokens = lambda _s, _it=estimates: next(  # type: ignore[method-assign]
+            _it, (100, "test")
+        )
+
+        await consolidator.maybe_consolidate_by_tokens(session)
+
+        reloaded = sessions.get_or_create("cli:test")
+        summary_msgs = [m for m in reloaded.messages if m.get("_archived_summary")]
+        assert len(summary_msgs) == 2
+        assert "First summary." in summary_msgs[0]["content"]
+        assert "Second summary." in summary_msgs[1]["content"]
+        # cursor 语义：回放起点恰好是最新一条摘要消息
+        cursor_msg = reloaded.messages[reloaded.last_consolidated]
+        assert cursor_msg.get("_archived_summary") is True
+        assert "Second summary." in cursor_msg["content"]
 
     def test_raw_archive_preserves_small_content(self, store):
         """Small messages should not be truncated."""

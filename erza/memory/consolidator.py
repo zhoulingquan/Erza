@@ -192,6 +192,15 @@ class Consolidator:
             replay_max_messages,
         )
         summary = await self.archive(chunk)
+        if isinstance(summary, str) and summary and summary != "(nothing)":
+            # W10-C3：摘要以持久化 user 消息插入 cursor 位置，
+            # 使 [last_consolidated:] 的回放以摘要消息开头。
+            self._insert_summary_message(
+                session,
+                end_idx,
+                summary,
+                self._extract_verbatim_recent(session),
+            )
         session.last_consolidated = end_idx
         self.sessions.save(session)
         return summary
@@ -236,6 +245,31 @@ class Consolidator:
         # 反转回时间顺序
         return list(reversed(result))
 
+    def _insert_summary_message(
+        self,
+        session: Session,
+        index: int,
+        summary: str,
+        verbatim_recent: list[str] | None = None,
+    ) -> None:
+        """把归档摘要格式化后作为 user 消息插入会话日志（W10-C3）。
+
+        文本格式：``[Archived Context Summary]`` 头 + LLM summary，可选拼接
+        最近用户消息原文（防 summary 改写偏离），每条截断到 500 字符。
+        消息插在归档前缀与保留后缀的交界处，随 ``get_history`` 重放；
+        取代旧的 system prompt 注入路径（``build_messages(session_summary=)``
+        已随 W10-C3 删除）。``_archived_summary`` 标记供持久化/测试识别。
+        """
+        lines = ["[Archived Context Summary]", "", summary]
+        if verbatim_recent:
+            lines += ["", "Recent user messages (verbatim):"]
+            for msg in verbatim_recent:
+                lines.append(msg[:500] + "..." if len(msg) > 500 else msg)
+        session.messages.insert(
+            index,
+            {"role": "user", "content": "\n".join(lines), "_archived_summary": True},
+        )
+
     def _persist_last_summary(self, session: Session, summary: str | None) -> None:
         if summary and summary != "(nothing)":
             session.metadata["_last_summary"] = {
@@ -255,20 +289,14 @@ class Consolidator:
         """Estimate prompt size from the full unconsolidated session tail."""
         history = self._full_unconsolidated_history(session, include_timestamps=True)
         channel, chat_id = session.key.split(":", 1) if ":" in session.key else (None, None)
-        # Include archived summary in estimation so the budget accounts for it.
-        meta = session.metadata.get("_last_summary")
-        summary = (
-            meta.get("text")
-            if isinstance(meta, dict)
-            else (meta if isinstance(meta, str) else None)
-        )
+        # W10-C3：归档摘要以消息形式位于会话日志中，随 history 一并计入估算，
+        # 不再单独注入（build_messages 的 session_summary 参数已删除）。
         probe_messages = self._build_messages(
             history=history,
             current_message="[token-probe]",
             channel=channel,
             chat_id=chat_id,
             sender_id=None,
-            session_summary=summary,
             session_metadata=session.metadata,
             workspace=self.store.workspace,
         )
@@ -473,6 +501,16 @@ class Consolidator:
                 # would just emit duplicate [RAW] entries.
                 if summary:
                     last_summary = summary
+                if summary and summary != "(nothing)":
+                    # W10-C3：摘要消息插在归档块末尾，cursor 推进后
+                    # [last_consolidated:] 的回放以摘要消息开头。
+                    if isinstance(summary, str):
+                        self._insert_summary_message(
+                            session,
+                            end_idx,
+                            summary,
+                            self._extract_verbatim_recent(session),
+                        )
                 session.last_consolidated = end_idx
                 self.sessions.save(session)
                 if not summary:
@@ -506,6 +544,10 @@ class Consolidator:
         lock-protected path.  Returns the summary text on success, ``None``
         if the LLM failed (raw_archive fallback), or ``""`` if there was
         nothing to archive.
+
+        W10-C3：归档成功后摘要以 user 消息插入会话日志（归档前缀与保留
+        后缀交界处），随 ``get_history`` 重放；``last_consolidated=0``
+        语义保持不变。
         """
         lock = self.get_lock(session_key)
         async with lock:
@@ -544,14 +586,19 @@ class Consolidator:
             if summary and summary != "(nothing)":
                 # 在清空 messages 前提取 verbatim_recent（基于当前 session.messages），
                 # 这样保留的是归档前的最近用户消息原文。
+                verbatim_recent = self._extract_verbatim_recent(session)
                 session.metadata["_last_summary"] = {
                     "text": summary,
                     "last_active": last_active.isoformat(),
-                    "verbatim_recent": self._extract_verbatim_recent(session),
+                    "verbatim_recent": verbatim_recent,
                 }
 
             session.messages = kept
             session.last_consolidated = 0
+            if summary and summary != "(nothing)":
+                # W10-C3：摘要以 user 消息插入会话日志头部（归档前缀与保留
+                # 后缀交界处），随 get_history 重放；不再注入 system prompt。
+                self._insert_summary_message(session, 0, summary, verbatim_recent)
             session.updated_at = datetime.now()
             self.sessions.save(session)
 

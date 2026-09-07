@@ -944,7 +944,6 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
         msg: InboundMessage,
         session: Session,
         history: list[dict[str, Any]],
-        pending_summary: str | None,
         agent_override: SubagentDefinition | None = None,
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
@@ -957,7 +956,6 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
             chat_id=self._runtime_chat_id(msg),
             sender_id=msg.sender_id,
             session_key=session.key,
-            session_summary=pending_summary,
             session_metadata=session.metadata,
             workspace=scope.project_path,
             runtime_state=self,

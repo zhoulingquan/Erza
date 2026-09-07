@@ -1,11 +1,13 @@
 """Direct unit tests for AutoCompact class methods in isolation."""
 
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from erza.agent.autocompact import AutoCompact
+from erza.memory.consolidator import Consolidator
 from erza.session.manager import Session, SessionManager
 
 
@@ -76,10 +78,10 @@ class TestInit:
         ac = _make_autocompact()
         assert ac._archiving == set()
 
-    def test_summaries_dict_is_empty(self):
-        """_summaries should start as an empty dict."""
+    def test_no_summary_cache_attribute(self):
+        """W10-C3: the in-memory summary cache is gone; summaries live in the session log."""
         ac = _make_autocompact()
-        assert ac._summaries == {}
+        assert not hasattr(ac, "_summaries")
 
     def test_stores_sessions_reference(self):
         """sessions attribute should reference the passed SessionManager."""
@@ -152,57 +154,67 @@ class TestIsExpired:
 
 
 # ---------------------------------------------------------------------------
-# _format_summary
+# Consolidator._insert_summary_message
 # ---------------------------------------------------------------------------
 
 
-class TestFormatSummary:
-    """Test AutoCompact._format_summary static method."""
+class TestInsertSummaryMessage:
+    """Test Consolidator._insert_summary_message formatting (W10-C3)."""
 
-    def test_contains_isoformat_timestamp(self):
-        """Output should contain last_active as isoformat."""
-        last_active = datetime(2026, 5, 13, 14, 30, 0)
-        result = AutoCompact._format_summary("Some text", last_active)
-        assert "2026-05-13T14:30:00" in result
+    @staticmethod
+    def _session() -> SimpleNamespace:
+        return SimpleNamespace(messages=[])
 
-    def test_contains_summary_text(self):
-        """Output should contain the provided text verbatim."""
-        last_active = datetime(2026, 1, 1)
-        result = AutoCompact._format_summary("User discussed Python.", last_active)
-        assert "User discussed Python." in result
+    def test_inserts_user_message_with_header(self):
+        """摘要应作为带 _archived_summary 标记的 user 消息插入指定位置。"""
+        session = self._session()
+        Consolidator._insert_summary_message(None, session, 0, "User discussed Python.")
+        assert len(session.messages) == 1
+        msg = session.messages[0]
+        assert msg["role"] == "user"
+        assert msg["_archived_summary"] is True
+        assert msg["content"].startswith("[Archived Context Summary]")
+        assert "User discussed Python." in msg["content"]
 
-    def test_output_starts_with_label(self):
-        """Output should start with the standard prefix."""
-        last_active = datetime(2026, 1, 1)
-        result = AutoCompact._format_summary("text", last_active)
-        assert result.startswith("Previous conversation summary (last active ")
+    def test_inserts_at_requested_index(self):
+        session = self._session()
+        session.messages = [{"role": "user", "content": "kept"}]
+        Consolidator._insert_summary_message(None, session, 0, "summary text")
+        assert session.messages[0]["_archived_summary"] is True
+        assert session.messages[1]["content"] == "kept"
 
     def test_verbatim_appended_when_provided(self):
         """verbatim_recent 用户消息原文应拼接到 summary 之后（防改写偏离）。"""
-        last_active = datetime(2026, 1, 1)
-        result = AutoCompact._format_summary(
+        session = self._session()
+        Consolidator._insert_summary_message(
+            None,
+            session,
+            0,
             "summary text",
-            last_active,
-            verbatim=["把订单号改成 12345", "再帮我加一条备注"],
+            verbatim_recent=["把订单号改成 12345", "再帮我加一条备注"],
         )
-        assert "Recent user messages (verbatim):" in result
-        assert "把订单号改成 12345" in result
-        assert "再帮我加一条备注" in result
+        content = session.messages[0]["content"]
+        assert "Recent user messages (verbatim):" in content
+        assert "把订单号改成 12345" in content
+        assert "再帮我加一条备注" in content
 
     def test_verbatim_long_message_truncated(self):
         """过长的 verbatim 消息应被截断到 500 字符以内。"""
-        last_active = datetime(2026, 1, 1)
-        long_msg = "x" * 1000
-        result = AutoCompact._format_summary("s", last_active, verbatim=[long_msg])
-        assert "..." in result
+        long_msg = "q" * 1000  # 'q' 不出现在头部/标签中，便于精确计数
+        session = self._session()
+        Consolidator._insert_summary_message(
+            None, session, 0, "s", verbatim_recent=[long_msg]
+        )
+        content = session.messages[0]["content"]
+        assert "..." in content
         # 截断后应保留 500 字符 + "..."
-        assert result.count("x") == 500
+        assert content.count("q") == 500
 
     def test_verbatim_omitted_when_empty(self):
-        """空的 verbatim 列表不应触发拼接块（保持旧行为）。"""
-        last_active = datetime(2026, 1, 1)
-        result = AutoCompact._format_summary("s", last_active, verbatim=[])
-        assert "Recent user messages (verbatim):" not in result
+        """空的 verbatim 列表不应触发拼接块。"""
+        session = self._session()
+        Consolidator._insert_summary_message(None, session, 0, "s", verbatim_recent=[])
+        assert "Recent user messages (verbatim):" not in session.messages[0]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +314,8 @@ class TestArchiveDelegates:
         )
 
     @pytest.mark.asyncio
-    async def test_populates_summaries_from_metadata(self):
+    async def test_archive_does_not_touch_metadata_directly(self):
+        """W10-C3: _archive delegates everything (incl. metadata persistence) to Consolidator."""
         ac = _make_autocompact()
         mock_sm = MagicMock(spec=SessionManager)
         session = _make_session(
@@ -314,9 +327,10 @@ class TestArchiveDelegates:
 
         await ac._archive("cli:test")
 
-        entry = ac._summaries.get("cli:test")
-        assert entry is not None
-        assert entry[0] == "Hello."
+        ac.consolidator.compact_idle_session.assert_awaited_once_with(
+            "cli:test",
+            ac._RECENT_SUFFIX_MESSAGES,
+        )
 
     @pytest.mark.asyncio
     async def test_no_summary_when_compact_returns_empty(self):
@@ -327,7 +341,8 @@ class TestArchiveDelegates:
 
         await ac._archive("cli:test")
 
-        assert "cli:test" not in ac._summaries
+        # W10-C3: nothing to persist; no metadata write happened.
+        mock_sm.save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_summary_when_compact_returns_nothing(self):
@@ -338,7 +353,8 @@ class TestArchiveDelegates:
 
         await ac._archive("cli:test")
 
-        assert "cli:test" not in ac._summaries
+        # W10-C3: nothing to persist; no metadata write happened.
+        mock_sm.save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_exception_still_removes_from_archiving(self):
@@ -371,7 +387,7 @@ class TestPrepareSession:
         ac._archiving.add("cli:test")
 
         original_session = _make_session()
-        result_session, summary = ac.prepare_session(original_session, "cli:test")
+        result_session = ac.prepare_session(original_session, "cli:test")
 
         mock_sm.get_or_create.assert_called_once_with("cli:test")
         assert result_session is reloaded
@@ -385,91 +401,27 @@ class TestPrepareSession:
         ac.sessions = mock_sm
 
         old_session = _make_session(updated_at=datetime.now() - timedelta(minutes=20))
-        result_session, summary = ac.prepare_session(old_session, "cli:test")
+        result_session = ac.prepare_session(old_session, "cli:test")
 
         mock_sm.get_or_create.assert_called_once_with("cli:test")
         assert result_session is reloaded
 
-    def test_hot_path_summary_from_summaries(self):
-        """Summary from _summaries dict should be returned (hot path)."""
-        ac = _make_autocompact()
-        session = _make_session()
-        last_active = datetime(2026, 5, 13, 14, 0, 0)
-        ac._summaries["cli:test"] = ("Hot summary.", last_active, [])
-
-        result_session, summary = ac.prepare_session(session, "cli:test")
-
-        assert result_session is session
-        assert summary is not None
-        assert "Hot summary." in summary
-        assert "Previous conversation summary" in summary
-
-    def test_hot_path_pops_summary_one_shot(self):
-        """Hot path should pop the summary (one-shot; second call returns None)."""
-        ac = _make_autocompact()
-        session = _make_session()
-        last_active = datetime(2026, 1, 1)
-        ac._summaries["cli:test"] = ("One-shot.", last_active, [])
-
-        _, summary1 = ac.prepare_session(session, "cli:test")
-        assert summary1 is not None
-        # Second call: hot path entry was popped
-        _, summary2 = ac.prepare_session(session, "cli:test")
-        assert summary2 is None
-
-    def test_cold_path_summary_from_metadata(self):
-        """When _summaries is empty, summary should come from metadata (cold path)."""
+    def test_unchanged_session_returned_as_is(self):
+        """W10-C3: prepare_session is reload-only; it never injects a summary."""
         ac = _make_autocompact()
         last_active = datetime(2026, 5, 13, 14, 0, 0)
         session = _make_session(
             metadata={
                 "_last_summary": {
-                    "text": "Cold summary.",
+                    "text": "Old summary.",
                     "last_active": last_active.isoformat(),
                 },
             }
         )
 
-        result_session, summary = ac.prepare_session(session, "cli:test")
+        result = ac.prepare_session(session, "cli:test")
 
-        assert result_session is session
-        assert summary is not None
-        assert "Cold summary." in summary
-
-    def test_no_summary_available_returns_none(self):
-        """When no summary is available, should return (session, None)."""
-        ac = _make_autocompact()
-        session = _make_session()
-
-        result_session, summary = ac.prepare_session(session, "cli:test")
-
-        assert result_session is session
-        assert summary is None
-
-    def test_cold_path_metadata_not_dict_returns_none(self):
-        """If metadata _last_summary is not a dict, should return None summary."""
-        ac = _make_autocompact()
-        session = _make_session(metadata={"_last_summary": "not a dict"})
-
-        result_session, summary = ac.prepare_session(session, "cli:test")
-
-        assert result_session is session
-        assert summary is None
-
-    def test_hot_path_takes_priority_over_metadata(self):
-        """Hot path (_summaries) should take priority over metadata."""
-        ac = _make_autocompact()
-        session = _make_session(
-            metadata={
-                "_last_summary": {
-                    "text": "Cold summary.",
-                    "last_active": datetime(2026, 1, 1).isoformat(),
-                },
-            }
-        )
-        last_active = datetime(2026, 5, 13, 14, 0, 0)
-        ac._summaries["cli:test"] = ("Hot summary.", last_active, [])
-
-        _, summary = ac.prepare_session(session, "cli:test")
-        assert "Hot summary." in summary
-        # After hot path pops, cold path would kick in on next call
+        assert result is session
+        # Summary replay comes from session history (messages), not from this method.
+        assert "_last_summary" in session.metadata
+        assert result.messages == session.messages

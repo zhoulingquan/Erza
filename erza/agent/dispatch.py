@@ -435,9 +435,7 @@ class MessageDispatcher:
         if self._agent._session_turn._restore_pending_user_turn(session):
             self._agent.sessions.save(session)
 
-        session, pending = self._agent.auto_compact.prepare_session(session, key)
-        if pending:
-            logger.info("Memory compact triggered for session {}", key)
+        session = self._agent.auto_compact.prepare_session(session, key)
 
         workspace_scope = self._agent.workspace_scopes.for_message(msg, session.metadata)
         await self._agent._resources._consolidator_for(
@@ -493,7 +491,6 @@ class MessageDispatcher:
             sender_id=msg.sender_id,
             session_key=key,
             memory_user_key=memory_user_key,
-            session_summary=pending,
             session_metadata=session.metadata,
             workspace=workspace_scope.project_path,
             runtime_state=self._agent,

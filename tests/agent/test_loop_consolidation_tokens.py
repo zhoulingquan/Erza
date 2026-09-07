@@ -108,7 +108,7 @@ async def test_consolidation_loops_until_target_met(tmp_path, monkeypatch) -> No
 
     call_count = [0]
 
-    def mock_estimate(_session, *, session_summary=None):
+    def mock_estimate(_session):
         call_count[0] += 1
         if call_count[0] == 1:
             return (500, "test")
@@ -147,7 +147,7 @@ async def test_consolidation_continues_below_trigger_until_half_target(
 
     call_count = [0]
 
-    def mock_estimate(_session, *, session_summary=None):
+    def mock_estimate(_session):
         call_count[0] += 1
         if call_count[0] == 1:
             return (500, "test")
@@ -181,7 +181,7 @@ async def test_consolidation_persists_summary_for_next_prepare_session(
 
     call_count = [0]
 
-    def mock_estimate(_session, *, session_summary=None):
+    def mock_estimate(_session):
         call_count[0] += 1
         if call_count[0] == 1:
             return (500, "test")
@@ -197,20 +197,21 @@ async def test_consolidation_persists_summary_for_next_prepare_session(
     assert meta is not None
     assert meta["text"] == "User discussed project status."
 
-    reloaded, pending = loop.auto_compact.prepare_session(reloaded, "cli:test")
-    assert pending is not None
-    assert "User discussed project status." in pending
+    # W10-C3: prepare_session is reload-only; the summary is replayed from
+    # history at the consolidation cursor.
+    cursor_msg = reloaded.messages[reloaded.last_consolidated]
+    assert cursor_msg.get("_archived_summary") is True
+    assert "User discussed project status." in cursor_msg["content"]
+    assert loop.auto_compact.prepare_session(reloaded, "cli:test") is reloaded
     # _last_summary persists for restart survival.
     assert "_last_summary" in reloaded.metadata
 
 
 @pytest.mark.asyncio
-async def test_preflight_consolidation_receives_pending_summary(tmp_path) -> None:
+async def test_preflight_consolidation_uses_prepared_session(tmp_path) -> None:
     loop = _make_loop(tmp_path, estimated_tokens=100, context_window_tokens=200)
     session = loop.sessions.get_or_create("cli:test")
-    loop.auto_compact.prepare_session = MagicMock(
-        return_value=(session, "Previous conversation summary: earlier context")
-    )  # type: ignore[method-assign]
+    loop.auto_compact.prepare_session = MagicMock(return_value=session)  # type: ignore[method-assign]
     loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=None)  # type: ignore[method-assign]
     loop._schedule_background = lambda coro: coro.close()  # type: ignore[method-assign]
 
@@ -254,7 +255,7 @@ async def test_preflight_consolidation_before_llm_call(tmp_path, monkeypatch) ->
 
     call_count = [0]
 
-    def mock_estimate(_session, *, session_summary=None):
+    def mock_estimate(_session):
         call_count[0] += 1
         return (1000 if call_count[0] <= 1 else 80, "test")
 

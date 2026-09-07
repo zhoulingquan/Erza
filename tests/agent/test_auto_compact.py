@@ -87,8 +87,9 @@ def _make_fake_compact(
             return ""
 
         last_active = session.updated_at
-        s = summary
+        s = ""
         if archive_msgs:
+            s = summary
             if on_archive:
                 result = on_archive(archive_msgs)
                 s = result if isinstance(result, str) else summary
@@ -103,6 +104,16 @@ def _make_fake_compact(
 
         session.messages = kept
         session.last_consolidated = 0
+        if s and s != "(nothing)":
+            # W10-C3：镜像 Consolidator —— 摘要以用户消息形式写入会话日志。
+            session.messages.insert(
+                0,
+                {
+                    "role": "user",
+                    "content": f"[Archived Context Summary]\n\n{s}",
+                    "_archived_summary": True,
+                },
+            )
         session.updated_at = datetime.now()
         loop.sessions.save(session)
         return s
@@ -301,14 +312,17 @@ class TestAutoCompact:
 
         assert len(archived_messages) == 4
         session_after = loop.sessions.get_or_create("cli:test")
-        assert len(session_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES
-        assert session_after.messages[0]["content"] == "msg user 2"
+        # W10-C3: the summary is replayed as a user message, so the suffix grows by one.
+        assert len(session_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES + 1
+        assert session_after.messages[0].get("_archived_summary") is True
+        assert "Summary." in session_after.messages[0]["content"]
+        assert session_after.messages[1]["content"] == "msg user 2"
         assert session_after.messages[-1]["content"] == "msg assistant 5"
         await loop.close_mcp()
 
     @pytest.mark.asyncio
     async def test_auto_compact_stores_summary(self, tmp_path):
-        """_archive should store the summary in _summaries."""
+        """_archive persists the summary via Consolidator: metadata + replayed user message."""
         loop = _make_loop(tmp_path, session_ttl_minutes=15)
         session = loop.sessions.get_or_create("cli:test")
         _add_turns(session, 6, prefix="hello")
@@ -321,11 +335,14 @@ class TestAutoCompact:
 
         await loop.auto_compact._archive("cli:test")
 
-        entry = loop.auto_compact._summaries.get("cli:test")
-        assert entry is not None
-        assert entry[0] == "User said hello."
         session_after = loop.sessions.get_or_create("cli:test")
-        assert len(session_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES
+        meta = session_after.metadata.get("_last_summary")
+        assert meta is not None
+        assert meta["text"] == "User said hello."
+        summary_msg = session_after.messages[0]
+        assert summary_msg.get("_archived_summary") is True
+        assert "User said hello." in summary_msg["content"]
+        assert len(session_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES + 1
         await loop.close_mcp()
 
     @pytest.mark.asyncio
@@ -339,7 +356,6 @@ class TestAutoCompact:
 
         session_after = loop.sessions.get_or_create("cli:test")
         assert len(session_after.messages) == 0
-        assert "cli:test" not in loop.auto_compact._summaries
         await loop.close_mcp()
 
     @pytest.mark.asyncio
@@ -557,8 +573,8 @@ class TestAutoCompactEdgeCases:
 
         session_after = loop.sessions.get_or_create("cli:test")
         assert len(session_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES
-        # "(nothing)" summary should not be stored
-        assert "cli:test" not in loop.auto_compact._summaries
+        # "(nothing)" summary should not be stored or replayed
+        assert "_last_summary" not in loop.sessions.get_or_create("cli:test").metadata
 
         await loop.close_mcp()
 
@@ -643,6 +659,12 @@ class TestAutoCompactIntegration:
         session.updated_at = datetime.now() - timedelta(minutes=20)
         loop.sessions.save(session)
 
+        # Phase 2b: idle-period background tick archives the expired session
+        # (production: check_expired fires while the user is away).
+        loop.auto_compact._last_scan_monotonic = float("-inf")
+        loop.auto_compact.check_expired(loop._schedule_background)
+        await asyncio.sleep(0.1)
+
         # Phase 3: User returns with a new message
         loop.provider.chat_with_retry = AsyncMock(
             return_value=LLMResponse(
@@ -667,17 +689,15 @@ class TestAutoCompactIntegration:
             "past tense is used" in str(m.get("content", "")) for m in session_after.messages
         )
 
-        # Summary should NOT be persisted in session (ephemeral, one-shot)
-        assert not any(
-            "[Resumed Session]" in str(m.get("content", "")) for m in session_after.messages
+        # W10-C3: the archived summary IS persisted now, replayed as a user message
+        assert any(
+            "[Archived Context Summary]" in str(m.get("content", ""))
+            for m in session_after.messages
         )
         # Runtime context end marker should NOT be persisted
         assert not any(
             "[/Runtime Context]" in str(m.get("content", "")) for m in session_after.messages
         )
-
-        # Pending summary should be consumed (one-shot)
-        assert "cli:test" not in loop.auto_compact._summaries
 
         # The new message should be processed (response exists)
         assert response is not None
@@ -763,11 +783,13 @@ class TestProactiveAutoCompact:
         await self._run_check_expired(loop)
 
         session_after = loop.sessions.get_or_create("cli:test")
-        assert len(session_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES
+        # W10-C3: the summary rides as a message, so the suffix grows by one.
+        assert len(session_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES + 1
         assert len(archived_messages) == 2
-        entry = loop.auto_compact._summaries.get("cli:test")
-        assert entry is not None
-        assert entry[0] == "User chatted about old things."
+        meta = session_after.metadata.get("_last_summary")
+        assert meta is not None
+        assert meta["text"] == "User chatted about old things."
+        assert session_after.messages[0].get("_archived_summary") is True
         await loop.close_mcp()
 
     @pytest.mark.asyncio
@@ -856,7 +878,7 @@ class TestProactiveAutoCompact:
         await self._run_check_expired(loop)
 
         # Empty session should not produce a summary
-        assert "cli:test" not in loop.auto_compact._summaries
+        assert "_last_summary" not in loop.sessions.get_or_create("cli:test").metadata
         await loop.close_mcp()
 
     @pytest.mark.asyncio
@@ -927,7 +949,8 @@ class TestProactiveAutoCompact:
 
         assert _fake_compact.state["count"] == 1
         s1_after = loop.sessions.get_or_create("cli:expired_idle")
-        assert len(s1_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES
+        # W10-C3: the summary rides as a message, so the suffix grows by one.
+        assert len(s1_after.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES + 1
         s2_after = loop.sessions.get_or_create("cli:expired_active")
         assert len(s2_after.messages) == 12  # Preserved
         s3_after = loop.sessions.get_or_create("cli:recent")
@@ -967,11 +990,9 @@ class TestProactiveAutoCompact:
 
         # First tick: skips (no messages), refreshes updated_at
         await self._run_check_expired(loop)
-        assert "cli:test" not in loop.auto_compact._summaries
 
         # Second tick: should NOT re-schedule because updated_at is fresh
         await self._run_check_expired(loop)
-        assert "cli:test" not in loop.auto_compact._summaries
         await loop.close_mcp()
 
     @pytest.mark.asyncio
@@ -1036,8 +1057,8 @@ class TestSummaryPersistence:
         await loop.close_mcp()
 
     @pytest.mark.asyncio
-    async def test_summary_recovered_after_restart(self, tmp_path):
-        """Summary should be recovered from metadata when _summaries is empty (simulates restart)."""
+    async def test_summary_message_survives_restart(self, tmp_path):
+        """W10-C3: the archived summary lives in session history, so it survives restart."""
         loop = _make_loop(tmp_path, session_ttl_minutes=15)
         session = loop.sessions.get_or_create("cli:test")
         _add_turns(session, 6, prefix="hello")
@@ -1053,20 +1074,22 @@ class TestSummaryPersistence:
         # Archive
         await loop.auto_compact._archive("cli:test")
 
-        # Simulate restart: clear in-memory state
-        loop.auto_compact._summaries.clear()
+        # Simulate restart
         loop.sessions.invalidate("cli:test")
-
-        # prepare_session should recover summary from metadata
         reloaded = loop.sessions.get_or_create("cli:test")
-        assert len(reloaded.messages) == loop.auto_compact._RECENT_SUFFIX_MESSAGES
-        _, summary = loop.auto_compact.prepare_session(reloaded, "cli:test")
 
-        assert summary is not None
-        assert "User said hello." in summary
-        assert "Previous conversation summary" in summary
-        # _last_summary persists in metadata for restart survival.
+        # The summary message is replayed from history
+        summary_msg = reloaded.messages[0]
+        assert summary_msg.get("_archived_summary") is True
+        assert "User said hello." in summary_msg["content"]
+        # _last_summary stays in metadata for observability
         assert "_last_summary" in reloaded.metadata
+
+        # prepare_session is reload-only and must not alter history
+        before = [dict(m) for m in reloaded.messages]
+        result = loop.auto_compact.prepare_session(reloaded, "cli:test")
+        assert result is reloaded
+        assert [dict(m) for m in reloaded.messages] == before
         await loop.close_mcp()
 
     @pytest.mark.asyncio
@@ -1082,45 +1105,17 @@ class TestSummaryPersistence:
 
         await loop.auto_compact._archive("cli:test")
 
-        # Clear in-memory to force metadata path
-        loop.auto_compact._summaries.clear()
+        # Simulate restart
         loop.sessions.invalidate("cli:test")
         reloaded = loop.sessions.get_or_create("cli:test")
 
-        # Every call returns the summary from metadata (no _consumed_keys gate)
-        _, summary = loop.auto_compact.prepare_session(reloaded, "cli:test")
-        assert summary is not None
-        _, summary2 = loop.auto_compact.prepare_session(reloaded, "cli:test")
-        assert summary2 is not None
-        assert "Summary." in summary2
         # _last_summary persists in metadata for restart survival.
-        assert "_last_summary" in reloaded.metadata
-        await loop.close_mcp()
+        meta = reloaded.metadata.get("_last_summary")
+        assert meta is not None
+        assert meta["text"] == "Summary."
 
-    @pytest.mark.asyncio
-    async def test_metadata_cleanup_on_inmemory_path(self, tmp_path):
-        """In-memory _summaries path should also clean up _last_summary from metadata."""
-        loop = _make_loop(tmp_path, session_ttl_minutes=15)
-        session = loop.sessions.get_or_create("cli:test")
-        _add_turns(session, 6, prefix="hello")
-        session.updated_at = datetime.now() - timedelta(minutes=20)
-        loop.sessions.save(session)
-
-        loop.consolidator.compact_idle_session = _make_fake_compact(loop)
-
-        await loop.auto_compact._archive("cli:test")
-
-        # Both _summaries and metadata have the summary
-        assert "cli:test" in loop.auto_compact._summaries
-        loop.sessions.invalidate("cli:test")
-        reloaded = loop.sessions.get_or_create("cli:test")
-        assert "_last_summary" in reloaded.metadata
-
-        # In-memory path is taken (no restart)
-        _, summary = loop.auto_compact.prepare_session(reloaded, "cli:test")
-        assert summary is not None
-        # _last_summary persists in metadata for restart survival.
-        assert "_last_summary" in reloaded.metadata
+        # prepare_session is reload-only (no summary return value anymore)
+        assert loop.auto_compact.prepare_session(reloaded, "cli:test") is reloaded
         await loop.close_mcp()
 
     @pytest.mark.asyncio
@@ -1138,13 +1133,10 @@ class TestSummaryPersistence:
         )
         await loop.auto_compact._archive("cli:test")
 
-        # Consume the first summary via hot path
-        _, summary1 = loop.auto_compact.prepare_session(
-            loop.sessions.get_or_create("cli:test"), "cli:test"
-        )
-        assert summary1 is not None
-        assert "First summary." in summary1
-        assert "cli:test" not in loop.auto_compact._summaries  # popped by hot path
+        # The first archive persists the summary in metadata + history
+        meta = loop.sessions.get_or_create("cli:test").metadata.get("_last_summary")
+        assert meta is not None
+        assert meta["text"] == "First summary."
 
         # Add new messages and archive again (simulating a later turn)
         _add_turns(session, 4, prefix="world")
@@ -1157,14 +1149,16 @@ class TestSummaryPersistence:
         )
         await loop.auto_compact._archive("cli:test")
 
-        # The second archive writes a new summary
-        assert "cli:test" in loop.auto_compact._summaries
+        # The second archive overwrites the previous summary
+        session_after = loop.sessions.get_or_create("cli:test")
+        meta = session_after.metadata.get("_last_summary")
+        assert meta is not None
+        assert meta["text"] == "Second summary."
 
-        # prepare_session must return the new summary
-        reloaded = loop.sessions.get_or_create("cli:test")
-        _, summary2 = loop.auto_compact.prepare_session(reloaded, "cli:test")
-        assert summary2 is not None
-        assert "Second summary." in summary2
+        # Exactly one replayed summary message, carrying the newest text
+        summary_msgs = [m for m in session_after.messages if m.get("_archived_summary")]
+        assert len(summary_msgs) == 1
+        assert "Second summary." in summary_msgs[0]["content"]
         await loop.close_mcp()
 
     @pytest.mark.asyncio
