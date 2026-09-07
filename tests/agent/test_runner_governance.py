@@ -1,4 +1,7 @@
-"""Tests for AgentRunner context governance: backfill, orphan cleanup, microcompact, snip_history."""
+"""Tests for AgentRunner context governance: backfill, orphan cleanup, snip_history.
+
+W10-C4: microcompact tests moved to test_turn_boundary_compaction.py
+(turn-boundary session-level pass in AgentLoop)."""
 
 from __future__ import annotations
 
@@ -484,120 +487,6 @@ async def test_runner_backfill_only_mutates_model_context_not_returned_messages(
         {"role": "user", "content": "new prompt"},
         {"role": "assistant", "content": "done"},
     ]
-
-
-# ---------------------------------------------------------------------------
-# Microcompact (stale tool result compaction)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_microcompact_replaces_old_tool_results():
-    """Tool results beyond _MICROCOMPACT_KEEP_RECENT should be summarized."""
-    from erza.agent.runner_strategies import _MICROCOMPACT_KEEP_RECENT, microcompact
-
-    total = _MICROCOMPACT_KEEP_RECENT + 5
-    long_content = "x" * 600
-    messages: list[dict] = [{"role": "system", "content": "sys"}]
-    for i in range(total):
-        messages.append(
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": f"c{i}",
-                        "type": "function",
-                        "function": {"name": "read_file", "arguments": "{}"},
-                    }
-                ],
-            }
-        )
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": f"c{i}",
-                "name": "read_file",
-                "content": long_content,
-            }
-        )
-
-    result = microcompact(messages)
-    tool_msgs = [m for m in result if m.get("role") == "tool"]
-    stale_count = total - _MICROCOMPACT_KEEP_RECENT
-    compacted = [m for m in tool_msgs if "omitted from context" in str(m.get("content", ""))]
-    preserved = [m for m in tool_msgs if m.get("content") == long_content]
-    assert len(compacted) == stale_count
-    assert len(preserved) == _MICROCOMPACT_KEEP_RECENT
-
-
-@pytest.mark.asyncio
-async def test_microcompact_preserves_short_results():
-    """Short tool results (< _MICROCOMPACT_MIN_CHARS) should not be replaced."""
-    from erza.agent.runner_strategies import _MICROCOMPACT_KEEP_RECENT, microcompact
-
-    total = _MICROCOMPACT_KEEP_RECENT + 5
-    messages: list[dict] = []
-    for i in range(total):
-        messages.append(
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": f"c{i}",
-                        "type": "function",
-                        "function": {"name": "exec", "arguments": "{}"},
-                    }
-                ],
-            }
-        )
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": f"c{i}",
-                "name": "exec",
-                "content": "short",
-            }
-        )
-
-    result = microcompact(messages)
-    assert result is messages  # no copy needed — all stale results are short
-
-
-@pytest.mark.asyncio
-async def test_microcompact_skips_non_compactable_tools():
-    """Non-compactable tools (e.g. 'message') should never be replaced."""
-    from erza.agent.runner_strategies import _MICROCOMPACT_KEEP_RECENT, microcompact
-
-    total = _MICROCOMPACT_KEEP_RECENT + 5
-    long_content = "y" * 1000
-    messages: list[dict] = []
-    for i in range(total):
-        messages.append(
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": f"c{i}",
-                        "type": "function",
-                        "function": {"name": "message", "arguments": "{}"},
-                    }
-                ],
-            }
-        )
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": f"c{i}",
-                "name": "message",
-                "content": long_content,
-            }
-        )
-
-    result = microcompact(messages)
-    assert result is messages  # no compactable tools found
 
 
 def test_governance_repairs_orphans_after_snip():

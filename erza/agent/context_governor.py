@@ -90,8 +90,10 @@ class ContextGovernor:
     """Orchestrates an ordered list of ContextStrategy.
 
     Default behavior reproduces the legacy AgentRunner pipeline:
-    drop_orphan -> backfill_missing -> microcompact -> token_budget -> snip_history
+    drop_orphan -> backfill_missing -> token_budget -> snip_history
     -> drop_orphan -> backfill_missing (cleanup pass).
+    W10-C4: microcompact moved out of the request-local pipeline to a
+    persisted turn-boundary pass in ``AgentLoop``.
 
     On failure the governor resets to the original messages and applies a
     minimal repair (drop_orphan + backfill); if that also fails the raw
@@ -101,7 +103,6 @@ class ContextGovernor:
     BUILTIN_PIPELINE = (
         "drop_orphan_tool_results",
         "backfill_missing_tool_results",
-        "microcompact",
         "apply_tool_result_budget",
         "snip_history",
         "schema_crop",
@@ -126,14 +127,12 @@ class ContextGovernor:
             ApplyToolResultBudgetStrategy,
             BackfillMissingStrategy,
             DropOrphanStrategy,
-            MicrocompactStrategy,
             SnipHistoryStrategy,
         )
 
         factories = {
             "drop_orphan_tool_results": DropOrphanStrategy,
             "backfill_missing_tool_results": BackfillMissingStrategy,
-            "microcompact": MicrocompactStrategy,
             "apply_tool_result_budget": ApplyToolResultBudgetStrategy,
             "snip_history": SnipHistoryStrategy,
             "schema_crop": SchemaCropStrategy,

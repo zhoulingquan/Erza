@@ -174,8 +174,12 @@ class TestTokenBudgetConfig:
         assert captured_spec.max_tool_result_chars == 12000
 
     @pytest.mark.asyncio
-    async def test_red_pressure_halves_effective_budget(self) -> None:
-        """RED pressure halves the effective tool result budget (chars halved)."""
+    async def test_red_pressure_keeps_effective_budget(self) -> None:
+        """W10-C4: RED pressure no longer halves the tool result budget.
+
+        The halving was removed for byte-stable prefixes; the effective
+        limit stays ``max_tool_result_chars`` under every pressure level.
+        """
         from erza.agent.context_governor import PressureLevel
         from erza.agent.runner import AgentRunner, AgentRunSpec
         from erza.tools.registry import ToolRegistry
@@ -230,9 +234,9 @@ class TestTokenBudgetConfig:
         result = strategy.apply(messages, ctx)
         tool_content = [m for m in result if m.get("role") == "tool"][0]["content"]
 
-        # On RED, max_tool_result_chars is halved to 500 (plus truncation notice)
+        # The fixed budget (1000) applies even under RED (plus truncation notice)
         NOTICE_LEN = len("\n... (truncated)")
-        assert len(tool_content) <= 500 + NOTICE_LEN
+        assert len(tool_content) <= 1000 + NOTICE_LEN
 
     @pytest.mark.asyncio
     async def test_loop_exposes_token_attribute(self) -> None:

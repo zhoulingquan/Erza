@@ -424,14 +424,17 @@ def test_context_governor_default_strategies():
     assert len(names) >= 5
     assert "drop_orphan_tool_results" in names
     assert "backfill_missing_tool_results" in names
-    assert "microcompact" in names
+    # W10-C4: microcompact moved to the turn-boundary pass in AgentLoop.
+    assert "microcompact" not in names
     assert "apply_tool_result_budget" in names
     assert "snip_history" in names
 
 
 def test_context_governor_get_by_name():
     gov = ContextGovernor()
-    assert gov.get("microcompact") is not None
+    assert gov.get("snip_history") is not None
+    # W10-C4: microcompact is no longer a registered strategy.
+    assert gov.get("microcompact") is None
     assert gov.get("nonexistent_strategy") is None
 
 
@@ -439,7 +442,7 @@ def test_context_governor_builtin_pipeline_order():
     """The BUILTIN_PIPELINE tuple documents the legacy ordering."""
     pipeline = ContextGovernor.BUILTIN_PIPELINE
     assert pipeline[0] == "drop_orphan_tool_results"
-    assert "microcompact" in pipeline
+    assert "microcompact" not in pipeline
     assert "snip_history" in pipeline
     # Cleanup pass repeats drop_orphan + backfill at the end
     assert pipeline[-2:] == ("drop_orphan_tool_results", "backfill_missing_tool_results")

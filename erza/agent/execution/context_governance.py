@@ -49,8 +49,9 @@ class ContextGovernanceService:
         synthetic edits must not shift the append boundary used later when
         the caller saves only the new turn. The governor runs an ordered list
         of ContextStrategy; the default pipeline reproduces the legacy
-        hardcoded steps (drop_orphan -> backfill -> microcompact -> budget ->
-        snip -> drop_orphan -> backfill) and falls back to minimal repair on
+        hardcoded steps (drop_orphan -> backfill -> budget -> snip ->
+        drop_orphan -> backfill; W10-C4 moved microcompact to a persisted
+        turn-boundary pass in ``AgentLoop``) and falls back to minimal repair on
         failure. Spec-provided governors override the default.
         """
         try:
@@ -177,12 +178,14 @@ class ContextGovernanceService:
         *,
         pressure_level: Any | None = None,
     ) -> list[dict[str, Any]]:
-        from erza.agent.context_governor import PressureLevel
-        from erza.utils.helpers import truncate_text
+        """Apply the tool-result character budget deterministically.
 
-        max_chars = spec.max_tool_result_chars
-        if pressure_level is PressureLevel.RED:
-            max_chars = max_chars // 2
+        W10-C4: truncation is always ``spec.max_tool_result_chars`` (applied
+        inside ``normalize_tool_result``, same limit as creation time), so the
+        output no longer depends on pressure — in-turn iterations replay a
+        byte-identical prefix and governance is idempotent on already-normalized
+        results. ``pressure_level`` is kept for signature compatibility only.
+        """
         updated = messages
         for idx, message in enumerate(messages):
             if message.get("role") != "tool":
@@ -193,12 +196,6 @@ class ContextGovernanceService:
                 str(message.get("name") or "tool"),
                 message.get("content"),
             )
-            if (
-                pressure_level is PressureLevel.RED
-                and isinstance(normalized, str)
-                and len(normalized) > max_chars
-            ):
-                normalized = truncate_text(normalized, max_chars)
             if normalized != message.get("content"):
                 if updated is messages:
                     updated = [dict(m) for m in messages]

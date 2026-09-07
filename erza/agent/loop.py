@@ -336,6 +336,24 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
     _RUNTIME_CHECKPOINT_KEY = SessionTurnService._RUNTIME_CHECKPOINT_KEY
     _PENDING_USER_TURN_KEY = SessionTurnService._PENDING_USER_TURN_KEY
 
+    # W10-C4: turn-boundary microcompact (migrated from the request-local
+    # governance pipeline — see ContextGovernor.BUILTIN_PIPELINE).
+    # Keep the most recent N compactable tool results intact; older long
+    # results are rewritten in place as one-line placeholders and persisted.
+    _MICROCOMPACT_KEEP_RECENT = 10
+    _MICROCOMPACT_MIN_CHARS = 500
+    _COMPACTABLE_TOOLS = frozenset(
+        {
+            "read_file",
+            "exec",
+            "grep",
+            "find_files",
+            "web_fetch",
+            "list_dir",
+            "list_exec_sessions",
+        }
+    )
+
     def __init__(
         self,
         bus: MessageBus,
@@ -646,6 +664,7 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
                 set_tool_context=self._set_tool_context,
                 build_initial_messages=self._build_initial_messages,
                 ensure_memory_context_message=self._ensure_memory_context_message,
+                microcompact_session_history=self._microcompact_session_history,
                 replay_token_budget=self._replay_token_budget,
                 llm_runtime=self.llm_runtime,
                 refresh_provider_snapshot=self._refresh_provider_snapshot,
@@ -992,6 +1011,50 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
             },
         )
         self.sessions.save(session)
+
+    def _microcompact_session_history(self, session: Session, workspace: Path | str) -> None:
+        """Turn-boundary microcompact: rewrite old tool results in place, once.
+
+        W10-C4: stale compactable tool results in the replay window
+        (``session.messages[last_consolidated:]``) are replaced with one-line
+        placeholders at the turn boundary and persisted, so every in-turn
+        iteration replays a byte-stable prefix. Idempotent: placeholders are
+        far shorter than ``_MICROCOMPACT_MIN_CHARS``, so an already-compacted
+        window passes through unchanged.
+        """
+        window = session.messages[session.last_consolidated :]
+        compactable_indices: list[int] = []
+        for idx, msg in enumerate(window):
+            if msg.get("role") != "tool":
+                continue
+            name = msg.get("name")
+            if not name:
+                continue
+            # Prefer tool metadata when available; fall back to legacy whitelist.
+            tool = self.tools.get(name)
+            if tool is not None:
+                if not tool.compactable or tool.importance >= 1.0:
+                    continue
+            elif name not in self._COMPACTABLE_TOOLS:
+                continue
+            compactable_indices.append(idx)
+
+        if len(compactable_indices) <= self._MICROCOMPACT_KEEP_RECENT:
+            return
+
+        stale = compactable_indices[: len(compactable_indices) - self._MICROCOMPACT_KEEP_RECENT]
+        changed = False
+        for idx in stale:
+            msg = window[idx]
+            content = msg.get("content")
+            if not isinstance(content, str) or len(content) < self._MICROCOMPACT_MIN_CHARS:
+                continue
+            name = msg.get("name", "tool")
+            msg["content"] = f"[{name} result omitted from context]"
+            changed = True
+
+        if changed:
+            self.sessions.save(session)
 
     # -- dispatcher delegation ------------------------------------------------
     #

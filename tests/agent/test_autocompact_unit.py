@@ -1,7 +1,7 @@
 """Direct unit tests for AutoCompact class methods in isolation."""
 
-from types import SimpleNamespace
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

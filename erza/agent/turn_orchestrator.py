@@ -155,6 +155,9 @@ class TurnDeps:
     # W10-C2: stamps the once-per-session memory snapshot as the first
     # session message before history replay (no-op when already stamped).
     ensure_memory_context_message: Callable[..., None]
+    # W10-C4: turn-boundary microcompact rewrites stale compactable tool
+    # results in place and persists them before history replay.
+    microcompact_session_history: Callable[..., None]
     replay_token_budget: Callable[[], int]
     llm_runtime: Callable[[], LLMRuntime]
     refresh_provider_snapshot: Callable[[], None]
@@ -394,6 +397,11 @@ class TurnOrchestrator:
         # W10-C2: stamp the once-per-session memory snapshot (first session
         # message) before replaying history so it rides the history replay.
         self._deps.ensure_memory_context_message(ctx.session, scope.project_path)
+
+        # W10-C4: turn-boundary microcompact — rewrite stale compactable
+        # tool results once per turn and persist, so in-turn iterations
+        # replay a byte-stable prefix.
+        self._deps.microcompact_session_history(ctx.session, scope.project_path)
 
         _hist_kwargs: dict[str, Any] = {
             "max_messages": self._deps.max_messages,

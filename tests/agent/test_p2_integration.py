@@ -2,8 +2,9 @@
 
 End-to-end pass through ``ContextGovernanceService.govern_messages`` with a
 small context window and a real ToolRegistry, verifying that under RED
-pressure: telemetry is populated, tool-result budgets tighten, and tool
-schemas are cropped onto the spec.
+pressure: telemetry is populated, tool-result budgets apply deterministically
+(W10-C4: no pressure-dependent halving), and tool schemas are cropped onto
+the spec.
 """
 
 from __future__ import annotations
@@ -139,7 +140,8 @@ async def test_red_pressure_end_to_end(bound_telemetry) -> None:
     assert cropped_fn["parameters"]["properties"]["path"]["type"] == "string"
     assert "verbose" not in cropped_fn["parameters"]["properties"]
 
-    # Tool result budget tightened on RED (halved to 1000 + notice).
+    # W10-C4: tool-result budget is pressure-independent; the fixed limit
+    # (2000) applies under RED too (content here is well under it).
     tool_content = [m for m in governed if m.get("role") == "tool"][0]["content"]
     assert len(tool_content) <= 1000 + 16
 

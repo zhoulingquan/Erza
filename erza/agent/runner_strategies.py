@@ -2,14 +2,18 @@
 
 This module hosts both the strategy classes used by ContextGovernor and the
 pure-function governance implementations (``drop_orphan_tool_results``,
-``backfill_missing_tool_results``, ``microcompact``) that those strategies
-delegate to. The runner-bound strategies (``ApplyToolResultBudgetStrategy``
-and ``SnipHistoryStrategy``) delegate to the public methods of the
+``backfill_missing_tool_results``) that those strategies delegate to. The
+runner-bound strategies (``ApplyToolResultBudgetStrategy`` and
+``SnipHistoryStrategy``) delegate to the public methods of the
 ``ContextGovernanceService`` service via ``GovernanceContext._runner``'s
 ``_context_governance`` attribute, so they no longer reach into AgentRunner
 private methods (circular-stitch fix, PR-5b). The ``ContextStrategy``
 Protocol and the ``erza.context_strategies`` entry-point contract
 are unchanged.
+
+W10-C4: ``microcompact`` left the request-local governance pipeline and now
+runs once per turn at the turn boundary in ``AgentLoop`` (session-level,
+persisted) — see ``AgentLoop._microcompact_session_history``.
 """
 
 from __future__ import annotations
@@ -17,25 +21,11 @@ from __future__ import annotations
 from typing import Any
 
 from erza.agent.context_governor import GovernanceContext, PressureLevel
-from erza.tools.registry import ToolRegistry
 
 # ---------------------------------------------------------------------------
 # Governance constants (moved here from runner.py to keep governance logic
 # self-contained in this module).
 # ---------------------------------------------------------------------------
-_MICROCOMPACT_KEEP_RECENT = 10
-_MICROCOMPACT_MIN_CHARS = 500
-_COMPACTABLE_TOOLS = frozenset(
-    {
-        "read_file",
-        "exec",
-        "grep",
-        "find_files",
-        "web_fetch",
-        "list_dir",
-        "list_exec_sessions",
-    }
-)
 _BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
 
 
@@ -114,51 +104,6 @@ def backfill_missing_tool_results(
     return updated
 
 
-def microcompact(
-    messages: list[dict[str, Any]],
-    tools: ToolRegistry | None = None,
-) -> list[dict[str, Any]]:
-    """Replace old compactable tool results with one-line summaries.
-
-    A tool result is compactable if the tool declares compactable=True OR
-    the tool name is in the legacy ``_COMPACTABLE_TOOLS`` whitelist, AND
-    the tool's importance is below 1.0 (never drop critical results).
-    """
-    compactable_indices: list[int] = []
-    for idx, msg in enumerate(messages):
-        if msg.get("role") != "tool":
-            continue
-        name = msg.get("name")
-        if not name:
-            continue
-        # Prefer tool metadata when available; fall back to legacy whitelist
-        tool = tools.get(name) if tools else None
-        if tool is not None:
-            if not tool.compactable or tool.importance >= 1.0:
-                continue
-        elif name not in _COMPACTABLE_TOOLS:
-            continue
-        compactable_indices.append(idx)
-
-    if len(compactable_indices) <= _MICROCOMPACT_KEEP_RECENT:
-        return messages
-
-    stale = compactable_indices[: len(compactable_indices) - _MICROCOMPACT_KEEP_RECENT]
-    updated: list[dict[str, Any]] | None = None
-    for idx in stale:
-        msg = messages[idx]
-        content = msg.get("content")
-        if not isinstance(content, str) or len(content) < _MICROCOMPACT_MIN_CHARS:
-            continue
-        name = msg.get("name", "tool")
-        summary = f"[{name} result omitted from context]"
-        if updated is None:
-            updated = [dict(m) for m in messages]
-        updated[idx]["content"] = summary
-
-    return updated if updated is not None else messages
-
-
 # ---------------------------------------------------------------------------
 # Strategy classes
 # ---------------------------------------------------------------------------
@@ -191,16 +136,6 @@ class BackfillMissingStrategy(_RunnerBoundStrategy):
 
     def apply(self, messages, ctx):
         return backfill_missing_tool_results(messages)
-
-
-class MicrocompactStrategy(_RunnerBoundStrategy):
-    name = "microcompact"
-
-    def apply(self, messages, ctx):
-        # P2-T1: skip compaction when pressure is GREEN (no compaction needed).
-        if ctx.pressure is not None and ctx.pressure.level is PressureLevel.GREEN:
-            return messages
-        return microcompact(messages, ctx.tools)
 
 
 class ApplyToolResultBudgetStrategy(_RunnerBoundStrategy):

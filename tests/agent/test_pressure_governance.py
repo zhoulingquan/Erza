@@ -2,8 +2,9 @@
 
 Tests that ``PressureSignal`` is computed correctly at GREEN/YELLOW/RED
 thresholds, and that strategies change behavior based on the pressure
-level (microcompact skips on GREEN, apply_tool_result_budget tightens on
-RED, snip_history skips on GREEN).
+level (snip_history skips on GREEN). W10-C4: microcompact moved to the
+turn-boundary pass in ``AgentLoop`` (see test_turn_boundary_compaction.py)
+and apply_tool_result_budget no longer depends on pressure.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ from erza.agent.context_governor import (
 )
 from erza.agent.runner_strategies import (
     ApplyToolResultBudgetStrategy,
-    MicrocompactStrategy,
     SnipHistoryStrategy,
 )
 from erza.providers.base import LLMProvider
@@ -93,81 +93,12 @@ def _ctx(
     return ctx
 
 
-def test_microcompact_skips_on_green() -> None:
-    messages = [{"role": "tool", "name": "read_file", "content": "x" * 600}]
-    for _ in range(15):
-        messages.append({"role": "tool", "name": "read_file", "content": "x" * 600})
-    messages.append({"role": "user", "content": "hi"})
+def test_apply_tool_result_budget_fixed_limit_on_red() -> None:
+    """W10-C4: on RED, apply_tool_result_budget keeps the fixed limit.
 
-    ctx = _ctx(pressure=PressureSignal(100, 1000, 0.1, PressureLevel.GREEN))
-    strategy = MicrocompactStrategy()
-    result = strategy.apply(messages, ctx)
-    # On GREEN, microcompact should skip — messages unchanged
-    assert result is messages
-
-
-def test_microcompact_runs_on_red() -> None:
-    messages: list[dict[str, Any]] = []
-    for i in range(15):
-        messages.append({"role": "tool", "name": "read_file", "content": "x" * 600})
-    messages.append({"role": "user", "content": "hi"})
-
-    tools = MagicMock()
-    tool = MagicMock()
-    tool.compactable = True
-    tool.importance = 0.5
-    tools.get = MagicMock(return_value=tool)
-
-    ctx = GovernanceContext(
-        spec=MagicMock(),
-        tools=tools,
-        provider=MagicMock(spec=LLMProvider),
-        iteration=0,
-        runner=None,
-    )
-    ctx.pressure = PressureSignal(850, 1000, 0.85, PressureLevel.RED)
-
-    strategy = MicrocompactStrategy()
-    result = strategy.apply(messages, ctx)
-    # On RED, microcompact should compact old results
-    compacted = [
-        m for m in result if m.get("role") == "tool" and "omitted" in str(m.get("content", ""))
-    ]
-    assert len(compacted) > 0
-
-
-def test_microcompact_runs_when_no_pressure() -> None:
-    """When pressure is None (no budget), microcompact runs normally."""
-    messages: list[dict[str, Any]] = []
-    for i in range(15):
-        messages.append({"role": "tool", "name": "read_file", "content": "x" * 600})
-    messages.append({"role": "user", "content": "hi"})
-
-    tools = MagicMock()
-    tool = MagicMock()
-    tool.compactable = True
-    tool.importance = 0.5
-    tools.get = MagicMock(return_value=tool)
-
-    ctx = GovernanceContext(
-        spec=MagicMock(),
-        tools=tools,
-        provider=MagicMock(spec=LLMProvider),
-        iteration=0,
-        runner=None,
-    )
-    ctx.pressure = None
-
-    strategy = MicrocompactStrategy()
-    result = strategy.apply(messages, ctx)
-    compacted = [
-        m for m in result if m.get("role") == "tool" and "omitted" in str(m.get("content", ""))
-    ]
-    assert len(compacted) > 0
-
-
-def test_apply_tool_result_budget_tightens_on_red() -> None:
-    """On RED, apply_tool_result_budget halves the max_tool_result_chars."""
+    The pressure-dependent halving was removed for byte-stable prefixes;
+    the limit is always ``max_tool_result_chars`` (same as GREEN).
+    """
     from erza.agent.runner import AgentRunner, AgentRunSpec
 
     provider = MagicMock(spec=LLMProvider)
@@ -206,8 +137,8 @@ def test_apply_tool_result_budget_tightens_on_red() -> None:
     strategy = ApplyToolResultBudgetStrategy()
     result = strategy.apply(messages, ctx)
     tool_content = [m for m in result if m.get("role") == "tool"][0]["content"]
-    # On RED, max_tool_result_chars is halved to 500 (plus truncation notice)
-    assert len(tool_content) <= 500 + _NOTICE_LEN
+    # Fixed limit (1000) applies even under RED (plus truncation notice)
+    assert len(tool_content) <= 1000 + _NOTICE_LEN
 
 
 def test_apply_tool_result_budget_normal_on_green() -> None:
