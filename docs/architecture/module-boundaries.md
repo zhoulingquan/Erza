@@ -250,19 +250,21 @@
 - 拥有的状态:风险规则表(内置,可通过配置扩展)、审批回调注册表。
 - 生命周期所有者:`composition`(构建 `AgentLoop` 时注入 `AgentRunner`)。
 - 依赖方向:依赖 `config`(读取安全策略配置)、`security/workspace_access`(路径越权判定);不 import `agent/loop`、`agent/execution`。
-- 边界说明:风险分级**独立于规划复杂度**。`SafetyPolicy` 仅根据工具名、参数、工作区上下文评估单次调用的风险等级,不关心当前是 FAST 还是 MANAGED 模式,也不参与 `usePlanner`/升级决策。规划层在生成计划时可调用 `assess_risk` 做前置过滤,但最终拦截/审批在工具执行入口(`ToolExecutionCoordinator.execute_tools`)统一执行,保证策略单一入口。
+- 边界说明:风险分级**独立于规划复杂度**。`SafetyPolicy` 仅根据工具名、参数、工作区上下文评估单次调用的风险等级,不参与 Plan/DIRECT 路由与升级决策。规划层在生成计划时可调用 `assess_risk` 做前置过滤,但最终拦截/审批在工具执行入口(`ToolExecutionCoordinator.execute_tools`)统一执行,保证策略单一入口。
 
-### 2.16 agent/planning(PlanningPolicy)
+### 2.16 agent/planning(PlanningPolicy 三层路由)
 
-- 位置:`erza/agent/planning_policy.py`
-- 公开 API:`PlanningPolicy`(class),`ExecutionMode`(enum: `FAST` / `MANAGED`),`select_mode(config, turn_context) -> ExecutionMode`,`should_upgrade(turn_context) -> bool`,`build_upgrade_context(turn_context) -> UpgradeContext`。
-- 拥有的状态:模式选择规则(含运行时升级判定)、`max_replans` 计数器(仅 MANAGED 模式生效)。
-- 生命周期所有者:`composition`(经 `AgentRunner` 持有,`PlanningReflectionService` 回调使用)。
-- 依赖方向:依赖 `config`(读取 `usePlanner`、`plannerMaxReplans`、分层预算等)、`agent/execution/recovery.py`(复用空响应重试计数);不 import `agent/loop`、具体 provider。
+- 位置:`erza/agent/planning_policy.py`(L1 纯函数门)、`erza/agent/execution/planning.py`(L2 灰区判别与建计划入口)、`erza/agent/runner.py`(L3 停滞/漂移升级);L2 提示词模板 `erza/templates/agent/planner_router.md`。
+- 公开 API:`PlanningPolicy`(dataclass,含 `planner_max_replans=3`、`force_plan: bool | None`),`Route`(enum: `PLAN` / `DIRECT` / `GRAY`),`RouteDecision`(dataclass: `route` / `cause` / `signals`),`classify(task_text) -> RouteDecision`(纯函数三值路由,零 LLM),`should_plan(task_text) -> bool`(兼容门面,仅 L1 判 `PLAN` 才 True),`init_planner(spec, *, force_plan=False)`(`PlanningReflectionService` 实现,`AgentRunner` 转发)。
+- 拥有的状态:`planner_max_replans`(每 turn replan provider 尝试上限)、`force_plan`(确定性覆盖;可强制规划或禁规划,`None` 按任务文本路由);决策日志只走 loguru 结构化行,无持久化状态。
+- 生命周期所有者:`composition` 构建 `AgentRunner` 时组装;`init_planner` 经 `PlanningReflectionService` 持有,`AgentRunner` 转发(保持 runner 表面不变)。
+- 依赖方向:`planning_policy.py` 为纯函数模块(仅标准库 + `loguru`),不 import provider、`agent/execution` 等运行时;L2 `_classify_gray` / `extract_session_context` / `parse_router_verdict` 在 `agent/execution/planning.py`(需要 provider 与 `AgentRunSpec`);L3 `_maybe_escalate_mid_turn` 在 `agent/runner.py`(需要 turn state);不 import `agent/loop`。
 - 边界说明:
-  1. **FAST/MANAGED 选择**: `usePlanner=true` 直接进入 MANAGED; `false` 走 FAST,但受运行时升级规则影响。
-  2. **运行时升级**: 连续 **2 个 turn** 无工具响应(模型直接产出文本) → 下一 turn 自动升级为 MANAGED;升级**每 turn 至多一次**,MANAGED turn 结束后重置,下一 turn 重新评估。此规则在 `PlanningPolicy.should_upgrade` 实现,由 `TurnOrchestrator` 在状态机进入前调用。
-  3. **与 SafetyPolicy 解耦**: 升级判定不读取风险等级;风险拦截在工具执行层,规划层只管模式切换与重规划预算。
+  1. **职责**:每个 turn 由三层级联决定是否启用 Plan-and-Execute——L1 启发式门(纯函数三值)→ L2 灰区同模型 1 次小调用(清单测试提示词,失败 fail-open DIRECT)→ L3 执行期兜底:停滞(连续 ≥2 次无工具响应迭代)或漂移(无计划 turn 收到 ≥8 次写入类工具调用,常量 `_DRIFT_RECEIPT_TOOL_THRESHOLD=8`)双触发中途升级,升级每 turn 至多 1 次、计数每 turn 重置。
+  2. **判定代价不对称**:误判 PLAN 只多付 1 次规划调用(有界损失);误判 DIRECT 令宏大任务长期漂移(无界损失)。因此 DIRECT 桶极度保守,拿不准一律进 GRAY 交 L2。
+  3. **关键决策(00-overview D1-D8 精简版)**:D1 L2 复用 `CallPurpose.PLANNER` 记账,不新增枚举值;D2 L2 不带 temperature/max_tokens 覆盖;D3 L2 会话上下文 = 首条 user 消息 + user 消息数(自 `spec.initial_messages` 派生,零新增状态);D4 停滞升级经 `init_planner(force_plan=True)` 强制规划,恢复 HEAD 语义;D5 升级复用快照 `origin="escalated"`(`PlanSnapshot.origin ∈ {"planner","escalated"}`,不新增 snapshot origin 值);D6 决策日志 = routing 时一条 loguru 结构化行(route/cause/signals),零新持久化格式;D7 词库封闭常量,批次内不扩展;D8 `should_plan()` 保留兼容门面。
+  4. **与 SafetyPolicy 解耦**:风险分级独立于规划复杂度;`SafetyPolicy` 不参与 Plan/DIRECT 路由与升级决策(见 §2.15)。
+  5. **W10 冻结保护**:L2 为独立小请求,不改任何 system prompt 构造或主对话消息形状。
 
 ### 2.17 agent/tools/execute_plan(ExecutePlanTool)
 
@@ -545,9 +547,9 @@
 
 ### 8.6 Lean ReAct Kernel P0
 
-- `AgentLoopConfig` 是执行策略配置的单一传播入口；`usePlanner=false` 保持 FAST
-  ReAct 默认路径，`usePlanner=true` 是全局 managed opt-in，不包含复杂度分类器或
-  FAST→MANAGED 动态升级。
+- `AgentLoopConfig` 是执行策略配置的单一传播入口；`planning_policy` 按层装配：
+  L1 常驻（`PlanningPolicy.classify` 纯函数）、L2 灰区判别与 L3 停滞/漂移升级在
+  runner 侧（`execution/planning.py` 与 `runner.py`）。
 - `turn_orchestrator.py` 在状态机进入前创建并绑定一个 context-local
   `CallLedger`；`AgentRunner.run()` 复用活动 ledger，直接调用时才建立独立 ledger。
   因此并发 turn/runner 不共享计数，异常与取消均由 async context manager 恢复上下文。
@@ -563,7 +565,7 @@
   fire-and-forget reflection 与 post-turn consolidation 不会污染已完成 usage 快照。
 - `Planner.create_plan()` / `replan()` 返回 `PlannerResult`。只有 `VALID` 结果进入
   managed 执行；缺失/非法 JSON、无有效 steps 或 provider 异常返回带稳定 error code
-  的 `FALLBACK`，执行退回 FAST。replan 精确允许 `max_replans` 次 provider 尝试，
+  的 `FALLBACK`，执行退回 ReAct-only。replan 精确允许 `max_replans` 次 provider 尝试，
   有效替换计划继承计数并前置已完成历史；耗尽仍以 `plan_failed` 终止。
 - `ContextGovernor` 从 `BUILTIN_PIPELINE` 逐项实例化内置策略，包括 snip 后重复的
   orphan/backfill 清理；仅插件名称与内置名称去重。

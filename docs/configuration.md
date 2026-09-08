@@ -1251,20 +1251,28 @@ at once. If your provider can handle more parallel work, raise the limit:
 
 ## Execution Policy and Turn Budgets
 
-Erza uses the lean FAST ReAct loop by default. Set `usePlanner` to `true`
-only when every turn should opt into managed plan-and-execute mode:
+Erza decides **per turn** — automatically — whether a task gets an explicit
+plan. No configuration is needed to turn planning on or off; a three-layer
+cascade routes each turn:
+
+1. **L1 heuristic gate** — deterministic, zero-cost routing of the task text
+   (`PlanningPolicy.classify`): strong multi-step signals / macro goals → PLAN;
+   greetings / single questions → DIRECT; everything else → GRAY.
+2. **L2 gray-zone adjudication** — only GRAY turns pay one small same-model call
+   with a checklist-test prompt (`agent/planner_router.md`); failures fall back
+   to DIRECT.
+3. **L3 mid-turn escalation** — during execution, a ReAct turn that stalls
+   (≥2 consecutive non-tool iterations) or drifts (≥8 write-class tool calls on
+   an unplanned turn) is upgraded to a plan with `origin="escalated"`, at most
+   once per turn.
+
+The only planning knob is the replan budget:
 
 ```json
 {
   "agents": {
     "defaults": {
-      "usePlanner": true,
-      "plannerModel": "deepseek/deepseek-chat",
-      "plannerMaxReplans": 2,
-      "enableReflection": false,
-      "reflectionInterval": 5,
-      "maxInputTokensPerTurn": 120000,
-      "maxCostPerTurnUsd": 0.25
+      "plannerMaxReplans": 3
     }
   }
 }
@@ -1272,46 +1280,30 @@ only when every turn should opt into managed plan-and-execute mode:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `agents.defaults.usePlanner` | `false` | Global managed-mode opt-in. `false` preserves the FAST ReAct loop. |
-| `agents.defaults.plannerModel` | `null` | Model used for planning and replanning; `null` reuses the active execution model. |
-| `agents.defaults.plannerMaxReplans` | `3` | Maximum replan provider attempts per managed turn. |
-| `agents.defaults.enableReflection` | `false` | Enables periodic and failure-triggered reflection calls. |
-| `agents.defaults.reflectionInterval` | `5` | Iterations between periodic reflections when reflection is enabled. |
-| `agents.defaults.maxInputTokensPerTurn` | `null` | Optional cumulative input-token limit across every model call in the turn (overrides tiered defaults). |
-| `agents.defaults.maxCostPerTurnUsd` | `null` | Optional cumulative USD cost limit across every model call in the turn (overrides tiered defaults). |
-| `agents.defaults.maxTurnWallTimeS` | `null` | Per-turn wall-clock limit in seconds (`None` = unlimited). |
-| `agents.defaults.fastMaxToolIterations` | `50` | FAST-mode tool iteration ceiling (lower ordinary-turn ceiling). |
-| `agents.defaults.managedMaxToolIterations` | `200` | MANAGED-mode tool iteration ceiling. |
-| `agents.defaults.maxToolResultTokens` | `4000` | Max tokens per tool result. `maxToolResultChars` (deprecated, default `16000`) takes precedence if explicitly set. |
-| `agents.defaults.fastMaxInputTokensPerTurn` | `80000` | FAST-mode input token ceiling (lower ordinary-turn ceiling). |
-| `agents.defaults.managedMaxInputTokensPerTurn` | `null` | MANAGED-mode input ceiling (`None` = P0 default 200k). |
-| `agents.defaults.fastMaxCostPerTurnUsd` | `2.0` | FAST-mode cost ceiling (lower ordinary-turn ceiling). |
-| `agents.defaults.managedMaxCostPerTurnUsd` | `null` | MANAGED-mode cost ceiling (`None` = P0 default $5). |
+| `agents.defaults.plannerMaxReplans` | `3` | Maximum replan provider attempts per turn. |
 
 Turn limits cover planner, replan, executor, compaction/memory, reflection, tool,
-and finalization model calls. Provider retries contribute only the final response
-once. Periodic reflection counts only when it completes before the owning turn
-closes; late fire-and-forget work cannot mutate a completed turn snapshot. A
-configured USD limit fails closed with `cost_tracking_unavailable` when
-the provider reports neither `cost_usd` nor model pricing; Erza never
-silently treats an unknown cost as zero. If planning output is missing or malformed, Erza records a stable
-diagnostic code and falls back to FAST mode instead of executing a fabricated
-managed plan.
+and finalization model calls. The planner budget now also counts the L2
+gray-zone router call and any mid-turn escalation planner call — both are
+accounted under `CallPurpose.PLANNER`. Provider retries contribute only the
+final response once. Periodic reflection counts only when it completes before
+the owning turn closes; late fire-and-forget work cannot mutate a completed turn
+snapshot. A configured USD limit fails closed with `cost_tracking_unavailable`
+when the provider reports neither `cost_usd` nor model pricing; Erza never
+silently treats an unknown cost as zero. If planning output is missing or
+malformed, Erza records a stable diagnostic code and falls back to plain ReAct
+instead of executing a fabricated plan.
 
-**FAST / MANAGED modes and runtime upgrade.** By default Erza runs the
-lean FAST ReAct loop (`usePlanner: false`). When `usePlanner: true`, every turn
-opts into managed plan-and-execute mode. Additionally, FAST turns can be
-upgraded to MANAGED at runtime: if **two consecutive turns** produce **no tool
-responses** (i.e. the model answers directly without calling tools), the next
-turn automatically runs in MANAGED mode. This upgrade happens at most **once per
-turn** — after a managed turn completes, the next turn re-evaluates from FAST
-again. The upgrade is a safety net for tasks that turn out to need planning
-mid-conversation; it does not replace the explicit `usePlanner` opt-in for
-known-complex workloads.
+**Legacy planning config.** `usePlanner` / `plannerModel` are deprecated. When a
+config upgrade is loaded, these keys are dropped automatically, so old configs
+still load without error. Behavior difference: the old `usePlanner: true` was a
+global opt-in across every turn; the new runtime routes every turn
+individually. There is no config option to force planning off — embedders that
+want to disable planning should construct `PlanningPolicy(force_plan=False)`
+explicitly.
 
-P0 does not classify task complexity or dynamically escalate FAST turns into
-managed mode beyond this upgrade rule. Any future adaptive routing, classifier,
-or verifier policy is a separate P1/P2 decision.
+See `docs/architecture/w11-adaptive-planner-plan/00-overview.md` for the full
+three-layer design and decision record (D1-D9).
 
 
 ## Auto Compact
