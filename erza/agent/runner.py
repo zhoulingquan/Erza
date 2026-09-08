@@ -60,6 +60,7 @@ _MAX_INJECTION_CYCLES = 5
 _NO_PROGRESS_FINAL_MESSAGE = (
     "Stopped: no detectable progress across consecutive plan step evaluations."
 )
+_DRIFT_RECEIPT_TOOL_THRESHOLD = 8
 
 # Backward-compatible module attribute for tests/extensions that monkeypatch
 # the former single-file tracker hook. Runtime uses prepare_file_edit_trackers.
@@ -190,6 +191,8 @@ class _TurnState:
     # W11-3: mid-turn stall escalation state (restored from HEAD semantics).
     consecutive_nontool_iterations: int = 0
     escalated_this_turn: bool = False
+    # W11-4: receipt-tool call count for drift detection (unplanned turns).
+    receipt_tool_calls: int = 0
     # W0-A1: cross-iteration evidence accumulator, filtered per step at
     # completion time. Cleared whenever the plan is replaced (step ids restart
     # at 1 after a replan, so stale observations would leak across plans).
@@ -604,20 +607,19 @@ class AgentRunner:
 
         条件不满足或升级失败时原样返回入参（plan 不变即无升级）。
         """
-        # All five condition gates (HEAD semantics, D4):
-        # 1. plan is None — only for unplanned turns
-        # 2. not escalated_this_turn — at most once per turn
-        # 3. planning_policy is not None — explicit no-policy skips
-        # 4. planning_policy.force_plan is not False — embedder opt-out
-        # 5. consecutive_nontool_iterations >= 2 — stall threshold
-        if not (
-            plan is None
-            and not state.escalated_this_turn
-            and spec.planning_policy is not None
-            and spec.planning_policy.force_plan is not False
-            and state.consecutive_nontool_iterations >= 2
-        ):
+        # Escalation gates (HEAD semantics, D4) + W11-4 drift OR-trigger:
+        # plan is None / not escalated_this_turn / policy present /
+        # force_plan not False, then escalate when stalled (>=2 non-tool
+        # iterations) OR drifting (>=8 receipt tool calls on unplanned turn).
+        policy = spec.planning_policy
+        policy_ok = policy is not None and policy.force_plan is not False
+        stalled = state.consecutive_nontool_iterations >= 2
+        drifting = state.receipt_tool_calls >= _DRIFT_RECEIPT_TOOL_THRESHOLD
+        if plan is not None or state.escalated_this_turn or not policy_ok:
             return planner, plan, planner_task_text, planner_tools_summary
+        if not (stalled or drifting):
+            return planner, plan, planner_task_text, planner_tools_summary
+        trigger = "drift" if (drifting and not stalled) else "stall"
 
         try:
             planner, new_plan, planner_task_text, planner_tools_summary = await self.init_planner(
@@ -633,7 +635,12 @@ class AgentRunner:
                 state.progress_tracker = ProgressTracker(ProgressPolicy())
                 state.escalated_this_turn = True
                 state.consecutive_nontool_iterations = 0
-                logger.info("Escalated stalled ReAct turn to plan (turn {})", state.turn_id)
+                state.receipt_tool_calls = 0
+                logger.info(
+                    "Escalated ReAct turn to plan mid-turn (turn {}, trigger={})",
+                    state.turn_id,
+                    trigger,
+                )
         except Exception:
             logger.warning("Mid-turn escalation failed; staying ReAct", exc_info=True)
         return planner, plan, planner_task_text, planner_tools_summary
@@ -666,6 +673,12 @@ class AgentRunner:
         )
         messages.append(assistant_message)
         state.tools_used.extend(tc.name for tc in response.tool_calls)
+        if plan is None:
+            from erza.agent.planner import RECEIPT_TOOLS
+
+            state.receipt_tool_calls += sum(
+                1 for tc in response.tool_calls if tc.name in RECEIPT_TOOLS
+            )
         await self.emit_checkpoint(
             spec,
             {
