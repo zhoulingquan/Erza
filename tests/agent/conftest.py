@@ -45,6 +45,7 @@ def make_loop(
     model_presets: dict | None = None,
     hooks: list | None = None,
     provider: MagicMock | None = None,
+    planning_policy=None,
     patch_deps: bool = False,
 ) -> AgentLoop:
     """Create a real AgentLoop for testing.
@@ -67,6 +68,8 @@ def make_loop(
         max_messages=max_messages,
         unified_session=unified_session,
     )
+    if planning_policy is not None:
+        kwargs["planning_policy"] = planning_policy
     if mcp_servers is not None:
         kwargs["mcp_servers"] = mcp_servers
     if tools_config is not None:

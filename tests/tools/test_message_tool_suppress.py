@@ -7,25 +7,29 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from erza.agent.loop import AgentLoop
+from erza.agent.planning_policy import PlanningPolicy
 from erza.bus.events import InboundMessage, OutboundMessage
 from erza.bus.queue import MessageBus
 from erza.providers.base import LLMResponse, ToolCallRequest
 from erza.tools.message import MessageTool
 
 
-def _make_loop(tmp_path: Path) -> AgentLoop:
+def _make_loop(tmp_path: Path, *, planning_policy=None) -> AgentLoop:
     bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
     # Pin the context window so construction never consults the machine-global
     # learning table / Hugging Face.
-    return AgentLoop(
+    kwargs = dict(
         bus=bus,
         provider=provider,
         workspace=tmp_path,
         model="test-model",
         context_window_tokens=128_000,
     )
+    if planning_policy is not None:
+        kwargs["planning_policy"] = planning_policy
+    return AgentLoop(**kwargs)
 
 
 class TestMessageToolSuppressLogic:
@@ -33,7 +37,9 @@ class TestMessageToolSuppressLogic:
 
     @pytest.mark.asyncio
     async def test_suppress_when_sent_to_same_target(self, tmp_path: Path) -> None:
-        loop = _make_loop(tmp_path)
+        loop = _make_loop(
+            tmp_path, planning_policy=PlanningPolicy(force_plan=False)  # A-1: skip L2 router
+        )
         tool_call = ToolCallRequest(
             id="call1",
             name="message",
@@ -61,7 +67,9 @@ class TestMessageToolSuppressLogic:
 
     @pytest.mark.asyncio
     async def test_not_suppress_when_sent_to_different_target(self, tmp_path: Path) -> None:
-        loop = _make_loop(tmp_path)
+        loop = _make_loop(
+            tmp_path, planning_policy=PlanningPolicy(force_plan=False)  # A-1: skip L2 router
+        )
         tool_call = ToolCallRequest(
             id="call1",
             name="message",

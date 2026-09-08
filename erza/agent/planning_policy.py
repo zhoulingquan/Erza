@@ -16,7 +16,8 @@ Three-valued routing (W11): L1 reduces each turn to a ``Route``:
 ``should_plan`` stays a compat facade: True only when L1 routes PLAN. GRAY in
 this batch is equivalent to DIRECT from the caller's perspective because only
 PLAN is consulted. Decision table (evaluation order, see ``classify``):
-forced -> empty -> strong_signal -> macro_goal -> verb_gate -> trivial -> gray.
+forced -> empty -> strong_signal -> macro_goal -> verb_gate -> trivial
+-> question -> trivial_imperative (E1.1: eff_len < 24, no verb) -> gray.
 """
 
 from __future__ import annotations
@@ -254,6 +255,16 @@ class PlanningPolicy:
         stripped = text.rstrip()
         if not re.search(r"[。；;\n]", text) and stripped.endswith(("？", "?", "吗", "呢")):
             return RouteDecision(route=Route.DIRECT, cause="trivial", signals={})
+
+        # E1.1: single imperative short phrase (no productive verb, no structural
+        # signals, effective length < 24) -> DIRECT.  Prevents short imperatives
+        # ("run tests", "ship") from falling into GRAY and paying an L2 call.
+        if eff_len < _TRIVIAL_TASK_CHARS:
+            return RouteDecision(
+                route=Route.DIRECT,
+                cause="trivial",
+                signals={"effective_len": eff_len},
+            )
 
         return RouteDecision(route=Route.GRAY, cause="no_signal", signals={})
 

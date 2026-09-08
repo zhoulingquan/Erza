@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from erza.config.schema import AgentDefaults
+from erza.agent.planning_policy import PlanningPolicy
 from erza.providers.base import LLMResponse, ToolCallRequest
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
@@ -251,7 +252,13 @@ async def test_next_turn_after_llm_error_keeps_turn_boundary(tmp_path):
         ]
     )
 
-    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+        planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
+    )
     loop.tools.get_definitions = MagicMock(return_value=[])
     loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
 

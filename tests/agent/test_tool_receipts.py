@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from erza.agent.runner import AgentRunner, AgentRunSpec
+from erza.agent.planning_policy import PlanningPolicy
 from erza.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from erza.tools.apply_patch import ApplyPatchTool
 from erza.tools.base import Tool
@@ -330,6 +331,7 @@ async def test_receipt_absent_from_event_surfaces(tmp_path: Path) -> None:
             max_iterations=3,
             max_tool_result_chars=_MAX_RESULT_CHARS,
             checkpoint_callback=_capture,
+            planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
         )
     )
 

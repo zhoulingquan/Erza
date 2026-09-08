@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from erza.agent.runner import AgentRunner, AgentRunSpec
+from erza.agent.planning_policy import PlanningPolicy
 from erza.config.schema import AgentDefaults
 from erza.providers.base import LLMResponse, ToolCallRequest
 
@@ -148,6 +149,7 @@ async def test_runner_streams_live_write_file_activity_from_tool_argument_deltas
             max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
             progress_callback=progress_cb,
             workspace=tmp_path,
+            planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
         )
     )
 
@@ -304,6 +306,7 @@ async def test_runner_marks_unfinished_live_write_file_activity_failed(tmp_path)
             max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
             progress_callback=progress_cb,
             workspace=tmp_path,
+            planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
         )
     )
 

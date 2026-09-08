@@ -134,9 +134,10 @@ def test_plain_english_paragraph_is_not_planned() -> None:
 
 
 def test_single_bulleted_line_is_not_planned() -> None:
-    """T7 (F1): a single line like '- 好的没问题' must not plan."""
+    """T7 (E1.1 flip): a single line like '- 好的没问题' -> DIRECT (trivial, eff_len < 24, no productive verb)."""
     decision = PlanningPolicy().classify("- 好的没问题")
-    assert decision.route is Route.GRAY
+    assert decision.route is Route.DIRECT  # E1.1 flipset: T7
+    assert decision.cause == "trivial"  # E1.1 flipset: T7
     assert PlanningPolicy().should_plan("- 好的没问题") is False
 
 
@@ -157,10 +158,11 @@ def test_git_diff_fragment_is_not_planned() -> None:
 
 
 def test_bare_za_no_longer_counts_as_step_marker() -> None:
-    """T9 (F2): '...然后再告诉我' keeps a single marker -> not planned."""
+    """T9 (E1.1 flip): '先看下这个，然后再告诉我' -> DIRECT (trivial, eff_len < 24, no productive verb)."""
     text = "先看下这个，然后再告诉我"
     decision = PlanningPolicy().classify(text)
-    assert decision.route is Route.GRAY
+    assert decision.route is Route.DIRECT  # E1.1 flipset: T9
+    assert decision.cause == "trivial"  # E1.1 flipset: T9
     assert PlanningPolicy().should_plan(text) is False
 
 
@@ -181,9 +183,10 @@ def test_sentence_initial_english_markers_plan() -> None:
 
 
 def test_single_english_marker_is_not_planned() -> None:
-    """T12 (F3): a single 'Then' -> not PLAN."""
+    """T12 (E1.1 flip): 'Then we left.' -> DIRECT (trivial, eff_len < 24, no productive verb)."""
     decision = PlanningPolicy().classify("Then we left.")
-    assert decision.route is Route.GRAY
+    assert decision.route is Route.DIRECT  # E1.1 flipset: T12
+    assert decision.cause == "trivial"  # E1.1 flipset: T12
     assert PlanningPolicy().should_plan("Then we left.") is False
 
 
@@ -241,11 +244,11 @@ def test_single_questions_are_direct() -> None:
         assert decision.cause == "trivial", task
 
 
-def test_greeting_with_following_task_is_gray() -> None:
-    """T19: '你好，帮我看看今天日程' -> GRAY (not a standalone greeting)."""
+def test_greeting_with_following_task_is_trivial_direct() -> None:
+    """T19 (E1.1): '你好，帮我看看今天日程' -> DIRECT (short imperative, no productive verb)."""
     decision = PlanningPolicy().classify("你好，帮我看看今天日程")
-    assert decision.route is Route.GRAY
-    assert decision.cause == "no_signal"
+    assert decision.route is Route.DIRECT
+    assert decision.cause == "trivial"
 
 
 def test_no_signal_ordering_task_is_gray() -> None:
@@ -256,11 +259,33 @@ def test_no_signal_ordering_task_is_gray() -> None:
     assert decision.cause == "no_signal"
 
 
-def test_non_productive_verb_is_gray() -> None:
-    """T21: '跑一下测试' -> GRAY ('跑' is not a productive verb)."""
+def test_non_productive_verb_is_trivial_direct() -> None:
+    """T21 (E1.1): '跑一下测试' -> DIRECT (short, no productive verb, eff_len < 24)."""
     decision = PlanningPolicy().classify("跑一下测试")
+    assert decision.route is Route.DIRECT
+    assert decision.cause == "trivial"
+
+
+def test_e1_short_imperative_chinese_is_direct() -> None:
+    """E1 regression: '看看这个文件' -> DIRECT (no productive verb, eff_len < 24)."""
+    decision = PlanningPolicy().classify("看看这个文件")
+    assert decision.route is Route.DIRECT
+    assert decision.cause == "trivial"
+    assert "effective_len" in decision.signals
+
+
+def test_e1_short_imperative_english_is_direct() -> None:
+    """E1 regression: 'ship' -> DIRECT (no productive verb, eff_len < 24)."""
+    decision = PlanningPolicy().classify("ship")
+    assert decision.route is Route.DIRECT
+    assert decision.cause == "trivial"
+
+
+def test_e1_verb_short_task_stays_gray() -> None:
+    """E1 regression: '写个注释' -> GRAY (productive verb present despite short length)."""
+    decision = PlanningPolicy().classify("写个注释")
     assert decision.route is Route.GRAY
-    assert decision.cause == "no_signal"
+    assert decision.cause == "verb_gate"
 
 
 # --- 4.5 signals audit ------------------------------------------------------

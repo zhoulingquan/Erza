@@ -14,11 +14,13 @@ in-flight turns.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from erza.ledger import allow_call_ledger_child_tasks
+from erza.ledger import CallPurpose, allow_call_ledger_child_tasks, call_purpose
+from erza.utils.prompt_templates import render_template
 
 if TYPE_CHECKING:
     from erza.agent.hook import AgentHook, AgentHookContext
@@ -30,14 +32,46 @@ def extract_task_from_messages(messages: list[dict[str, Any]]) -> str:
     """Extract the user's task from the initial messages (last user msg)."""
     for msg in reversed(messages):
         if msg.get("role") == "user":
-            content = msg.get("content")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                for block in reversed(content):
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        return str(block.get("text", ""))
+            text = _message_text(msg)
+            if text is not None:
+                return text
     return "(task)"
+
+
+def _message_text(msg: dict[str, Any]) -> str | None:
+    """Return a message's text content, or None when it has no text block."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for block in reversed(content):
+            if isinstance(block, dict) and block.get("type") == "text":
+                return str(block.get("text", ""))
+    return None
+
+
+def extract_session_context(messages: list[dict[str, Any]]) -> tuple[str | None, int]:
+    """First user message text (truncated to 200 chars) and user message count.
+
+    Gives the gray-zone router the session's original goal so referential
+    tasks ("do the three things above") can be judged, without any new
+    runtime state or persistence (D3).
+    """
+    user_msgs = [m for m in messages if m.get("role") == "user"]
+    if not user_msgs:
+        return None, 0
+    first = _message_text(user_msgs[0])
+    if first is None:
+        return None, len(user_msgs)
+    return first[:200], len(user_msgs)
+
+
+def parse_router_verdict(content: str) -> bool:
+    """True iff the first meaningful line says PLAN. Anything else -> False."""
+    head = content.strip()[:200].casefold()
+    if re.search(r"\bplan\b", head):
+        return True
+    return False
 
 
 def inject_step_guidance(
@@ -112,16 +146,35 @@ class PlanningReflectionService:
         to avoid importing planner at module load time (keeps runner.py
         import-light).
 
-        Routing (single-model simplification): the deterministic
-        ``PlanningPolicy.should_plan`` heuristic decides per turn whether the
-        task warrants a plan. The planner always reuses the execution model.
+        Routing: L1 deterministic ``PlanningPolicy.classify`` decides per turn
+        among PLAN / DIRECT / GRAY. PLAN goes straight to the planner; DIRECT
+        skips it; GRAY is adjudicated by one cheap same-model L2 router call
+        (fail-open to DIRECT). The planner always reuses the execution model.
         """
-        from erza.agent.planning_policy import PlanningPolicy
+        from erza.agent.planning_policy import PlanningPolicy, Route
 
         policy = getattr(spec, "planning_policy", None) or PlanningPolicy()
         task_text = extract_task_from_messages(spec.initial_messages)
-        if not policy.should_plan(task_text):
-            return None, None, None, None
+        decision = policy.classify(task_text)
+        if decision.route is Route.GRAY:
+            wants_plan = await self._classify_gray(spec, task_text)
+            logger.info(
+                "Planning route: gray (cause={}, llm={}) signals={}",
+                decision.cause,
+                "plan" if wants_plan else "direct",
+                decision.signals,
+            )
+            if not wants_plan:
+                return None, None, None, None
+        else:
+            logger.info(
+                "Planning route: {} cause={} signals={}",
+                decision.route.value,
+                decision.cause,
+                decision.signals,
+            )
+            if decision.route is Route.DIRECT:
+                return None, None, None, None
 
         from erza.agent.planner import Planner as _Planner
         from erza.agent.planner import PlannerStatus as _PlannerStatus
@@ -150,6 +203,39 @@ class PlanningReflectionService:
             logger.exception("Planner.create_plan failed; falling back to ReAct-only")
             return None, None, None, None
         return planner, plan, task_text, tools_summary
+
+    async def _classify_gray(self, spec: AgentRunSpec, task_text: str) -> bool:
+        """One cheap same-model call deciding a gray task: plan or direct.
+
+        Fail-open to False (DIRECT): a router failure must not block the turn.
+        Accounted under CallPurpose.PLANNER (D1); no temperature/max_tokens
+        overrides (D2) — call shape mirrors Planner.create_plan (A3).
+        """
+        first_task, user_count = extract_session_context(spec.initial_messages)
+        user_content = f"## Task\n{task_text}\n\n## Session Context\n"
+        if first_task is not None:
+            user_content += f"First user message: {first_task}\n"
+        user_content += f"User messages so far: {user_count}"
+        try:
+            async with call_purpose(CallPurpose.PLANNER):
+                response = await self._runner.provider.chat_with_retry(
+                    model=spec.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": render_template("agent/planner_router.md", strip=True),
+                        },
+                        {"role": "user", "content": user_content},
+                    ],
+                    tools=None,
+                    tool_choice=None,
+                )
+            if response.finish_reason == "error":
+                return False
+            return parse_router_verdict(response.content or "")
+        except Exception:
+            logger.warning("Gray-zone router failed; defaulting to DIRECT", exc_info=True)
+            return False
 
     def init_reflection(self, spec: AgentRunSpec) -> Any | None:
         """Optional reflection: produces "lesson learned" entries on failure or

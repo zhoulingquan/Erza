@@ -14,6 +14,7 @@ import pytest
 
 from erza.bus.events import InboundMessage
 from erza.config.schema import ModelPresetConfig
+from erza.agent.planning_policy import PlanningPolicy
 from erza.providers.base import LLMResponse
 from erza.providers.factory import ProviderSnapshot
 from tests.agent.conftest import make_loop
@@ -56,6 +57,7 @@ async def test_hot_switch_does_not_disturb_inflight_request(tmp_path):
         tmp_path,
         provider=old_provider,
         model_presets={"fast": ModelPresetConfig(model="new-model")},
+        planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
     )
     loop._preset_snapshot_loader = _snapshot_loader
 

@@ -245,7 +245,13 @@ class TestToolEventProgress:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+        loop = AgentLoop(
+            bus=bus,
+            provider=provider,
+            workspace=tmp_path,
+            model="test-model",
+            planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
+        )
 
         tool_call = ToolCallRequest(id="tc1", name="exec", arguments={"command": "ls"})
         calls = iter(
@@ -450,7 +456,11 @@ class TestToolEventProgress:
         )
         provider.chat_stream_with_retry = AsyncMock()
         loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="openai-codex/gpt-5.5"
+            bus=bus,
+            provider=provider,
+            workspace=tmp_path,
+            model="openai-codex/gpt-5.5",
+            planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
         )
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
@@ -493,7 +503,11 @@ class TestToolEventProgress:
         provider.chat_stream_with_retry = chat_stream_with_retry
         provider.chat_with_retry = AsyncMock()
         loop = AgentLoop(
-            bus=bus, provider=provider, workspace=tmp_path, model="openai-codex/gpt-5.5"
+            bus=bus,
+            provider=provider,
+            workspace=tmp_path,
+            model="openai-codex/gpt-5.5",
+            planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
         )
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
@@ -640,7 +654,13 @@ class TestToolEventProgress:
             return LLMResponse(content="Generated title", tool_calls=[])
 
         provider.chat_with_retry = AsyncMock(side_effect=chat_with_retry)
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+        loop = AgentLoop(
+            bus=bus,
+            provider=provider,
+            workspace=tmp_path,
+            model="test-model",
+            planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
+        )
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
