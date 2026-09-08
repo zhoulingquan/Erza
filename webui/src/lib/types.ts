@@ -238,8 +238,6 @@ export interface SettingsPayload {
     temperature: number;
     reasoning_effort: string | null;
     tool_hint_max_length: number;
-    use_planner: boolean;
-    planner_model: string | null;
     planner_max_replans: number;
   };
   model_presets: Array<{
@@ -526,8 +524,6 @@ export interface SettingsUpdate {
   modelPreset?: string | null;
   contextWindowTokens?: number;
   toolHintMaxLength?: number;
-  usePlanner?: boolean;
-  plannerModel?: string | null;
 }
 
 export interface ModelConfigurationCreate {

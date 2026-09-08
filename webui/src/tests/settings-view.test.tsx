@@ -26,8 +26,6 @@ function settingsPayload(): SettingsPayload {
       temperature: 0.1,
       reasoning_effort: null,
       tool_hint_max_length: 40,
-      use_planner: false,
-      planner_model: null,
       planner_max_replans: 3,
     },
     model_presets: [{

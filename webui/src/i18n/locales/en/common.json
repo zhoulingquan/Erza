@@ -333,14 +333,6 @@
       "lightContext": "Light context",
       "isolatedSession": "Isolated session"
     },
-    "planner": {
-      "title": "Plan & Execute dual model",
-      "useMain": "Main model",
-      "disabledHint": "ReAct only. Toggle on to enable plan-and-execute.",
-      "singleModelHint": "Planner: main model · Executor: main model",
-      "dualModelHint": "Planner: {{model}} · Executor: main model",
-      "toggleAria": "Toggle plan-and-execute dual model"
-    },
     "providers": {
       "saveProvider": "Save provider",
       "saved": "Saved"

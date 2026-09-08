@@ -82,8 +82,6 @@ export function SettingsView({
             runtimeSaving={state.runtime.runtimeSaving}
             onChangeRuntimeForm={state.runtime.setRuntimeForm}
             onSaveRuntime={state.runtime.saveRuntimeSettings}
-            plannerSaving={state.runtime.plannerSaving}
-            onSavePlanner={state.runtime.savePlannerSettings}
           />
         );
       case "appearance":

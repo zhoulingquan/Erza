@@ -20,7 +20,6 @@ import { BootstrapFileRow } from "../components/BootstrapFileRow";
 import { DreamFilesButton } from "../components/DreamFilesButton";
 import { HeartbeatLlmConfig } from "../components/HeartbeatLlmConfig";
 import { NumberInput, SegmentedControl } from "../components/SegmentedControl";
-import { PlannerConfig } from "../components/PlannerConfig";
 import { RestartSettingsFooter } from "../components/RestartSettingsFooter";
 import {
   OverviewListRow,
@@ -42,8 +41,6 @@ export function OverviewSettings({
   runtimeSaving,
   onChangeRuntimeForm,
   onSaveRuntime,
-  plannerSaving,
-  onSavePlanner,
 }: {
   settings: SettingsPayload;
   requiresRestart: boolean;
@@ -56,15 +53,11 @@ export function OverviewSettings({
   runtimeSaving: boolean;
   onChangeRuntimeForm: Dispatch<SetStateAction<RuntimeSettingsUpdate>>;
   onSaveRuntime: () => void;
-  plannerSaving: boolean;
-  onSavePlanner: (update: { usePlanner?: boolean; plannerModel?: string | null }) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
   const activePreset = settings.agent.model_preset || "default";
   const activeProvider = settings.agent.resolved_provider ?? settings.agent.provider;
-  const usePlanner = settings.agent.use_planner;
-  const plannerPreset = settings.agent.planner_model;
   return (
     <div className="space-y-7">
       <section>
@@ -103,18 +96,6 @@ export function OverviewSettings({
             caption={`${activeProvider} · ${activePreset}`}
             showBrandLogos={showBrandLogos}
             onClick={() => onSelectSection("models")}
-          />
-          <PlannerConfig
-            settings={settings}
-            usePlanner={usePlanner}
-            plannerPreset={plannerPreset}
-            saving={plannerSaving}
-            onToggle={(enabled) => {
-              void onSavePlanner({ usePlanner: enabled });
-            }}
-            onSelectPreset={(presetName) => {
-              void onSavePlanner({ plannerModel: presetName });
-            }}
           />
         </SettingsGroup>
       </section>

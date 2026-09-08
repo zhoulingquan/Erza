@@ -333,14 +333,6 @@
       "lightContext": "轻量上下文",
       "isolatedSession": "隔离会话"
     },
-    "planner": {
-      "title": "Plan & Execute 双模型",
-      "useMain": "主模型",
-      "disabledHint": "仅 ReAct 模式。打开开关以启用 Plan & Execute。",
-      "singleModelHint": "规划:主模型 · 执行:主模型",
-      "dualModelHint": "规划:{{model}} · 执行:主模型",
-      "toggleAria": "切换 Plan & Execute 双模型"
-    },
     "providers": {
       "saveProvider": "保存服务商",
       "saved": "已保存"

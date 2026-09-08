@@ -624,12 +624,6 @@ export async function updateSettings(
   if (update.toolHintMaxLength !== undefined) {
     query.set("tool_hint_max_length", String(update.toolHintMaxLength));
   }
-  if (update.usePlanner !== undefined) {
-    query.set("use_planner", String(update.usePlanner));
-  }
-  if (update.plannerModel !== undefined) {
-    query.set("planner_model", update.plannerModel ?? "");
-  }
   return request<SettingsPayload>(`${base}/api/settings/update?${query}`, token);
 }
 

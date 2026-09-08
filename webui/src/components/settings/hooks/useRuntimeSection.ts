@@ -8,7 +8,7 @@
 
 import { Dispatch, SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
 
-import { updateRuntimeSettings, updateSettings } from "@/lib/api";
+import { updateRuntimeSettings } from "@/lib/api";
 import type { RuntimeSettingsUpdate, SettingsPayload } from "@/lib/types";
 
 import { extractDreamCron, type RestartAwarePayload } from "../types";
@@ -21,8 +21,6 @@ export interface RuntimeSectionState {
   runtimeSaving: boolean;
   runtimeDirty: boolean;
   saveRuntimeSettings: () => Promise<void>;
-  plannerSaving: boolean;
-  savePlannerSettings: (update: { usePlanner?: boolean; plannerModel?: string | null }) => Promise<void>;
 }
 
 export function useRuntimeSection(shared: UseSectionShared): RuntimeSectionState {
@@ -41,7 +39,6 @@ export function useRuntimeSection(shared: UseSectionShared): RuntimeSectionState
     heartbeatModelPreset: "",
   });
   const [runtimeSaving, setRuntimeSaving] = useState(false);
-  const [plannerSaving, setPlannerSaving] = useState(false);
 
   // 监听 settings 变化同步 form（原 applyPayload 中的逻辑，移至此处）
   useEffect(() => {
@@ -99,34 +96,11 @@ export function useRuntimeSection(shared: UseSectionShared): RuntimeSectionState
     }
   }, [settings, runtimeDirty, runtimeSaving, runtimeForm, token, applyPayload, setPendingRestartSections, maybeRestartHostEngine, setError]);
 
-  const savePlannerSettings = useCallback(
-    async (update: { usePlanner?: boolean; plannerModel?: string | null }) => {
-      if (!settings || plannerSaving) return;
-      setPlannerSaving(true);
-      try {
-        const payload: SettingsPayload = await updateSettings(token, update);
-        applyPayload(payload);
-        if (payload.requires_restart) {
-          setPendingRestartSections((prev) => ({ ...prev, runtime: true }));
-        }
-        await maybeRestartHostEngine(payload as RestartAwarePayload);
-        setError(null);
-      } catch (err) {
-        setError((err as Error).message);
-      } finally {
-        setPlannerSaving(false);
-      }
-    },
-    [settings, plannerSaving, token, applyPayload, setPendingRestartSections, maybeRestartHostEngine, setError],
-  );
-
   return {
     runtimeForm,
     setRuntimeForm,
     runtimeSaving,
     runtimeDirty,
     saveRuntimeSettings,
-    plannerSaving,
-    savePlannerSettings,
   };
 }
