@@ -139,45 +139,50 @@ class PlanningReflectionService:
         )
         return snapshot
 
-    async def init_planner(self, spec: AgentRunSpec) -> tuple[Any, Any, str | None, str | None]:
+    async def init_planner(
+        self, spec: AgentRunSpec, *, force_plan: bool = False
+    ) -> tuple[Any, Any, str | None, str | None]:
         """Plan-and-Execute 初始化, 返回 (planner, plan, task_text, tools_summary)。
 
         创建计划失败时回退 ReAct-only (planner/plan 均为 None)。Typed as Any
         to avoid importing planner at module load time (keeps runner.py
         import-light).
 
-        Routing: L1 deterministic ``PlanningPolicy.classify`` decides per turn
-        among PLAN / DIRECT / GRAY. PLAN goes straight to the planner; DIRECT
-        skips it; GRAY is adjudicated by one cheap same-model L2 router call
-        (fail-open to DIRECT). The planner always reuses the execution model.
+        ``force_plan=True`` skips L1 classify and L2 gray-zone adjudication,
+        going straight to planner creation. Used by mid-turn stall/drift
+        escalation (D4). ``force_plan=False`` (default) is the normal routing
+        path — existing callers are unaware of the parameter.
         """
-        from erza.agent.planning_policy import PlanningPolicy, Route
+        from erza.agent.planner import Planner as _Planner
+        from erza.agent.planner import PlannerStatus as _PlannerStatus
+        from erza.agent.planning_policy import PlanningPolicy
 
         policy = getattr(spec, "planning_policy", None) or PlanningPolicy()
         task_text = extract_task_from_messages(spec.initial_messages)
-        decision = policy.classify(task_text)
-        if decision.route is Route.GRAY:
-            wants_plan = await self._classify_gray(spec, task_text)
-            logger.info(
-                "Planning route: gray (cause={}, llm={}) signals={}",
-                decision.cause,
-                "plan" if wants_plan else "direct",
-                decision.signals,
-            )
-            if not wants_plan:
-                return None, None, None, None
-        else:
-            logger.info(
-                "Planning route: {} cause={} signals={}",
-                decision.route.value,
-                decision.cause,
-                decision.signals,
-            )
-            if decision.route is Route.DIRECT:
-                return None, None, None, None
 
-        from erza.agent.planner import Planner as _Planner
-        from erza.agent.planner import PlannerStatus as _PlannerStatus
+        if not force_plan:
+            from erza.agent.planning_policy import Route
+
+            decision = policy.classify(task_text)
+            if decision.route is Route.GRAY:
+                wants_plan = await self._classify_gray(spec, task_text)
+                logger.info(
+                    "Planning route: gray (cause={}, llm={}) signals={}",
+                    decision.cause,
+                    "plan" if wants_plan else "direct",
+                    decision.signals,
+                )
+                if not wants_plan:
+                    return None, None, None, None
+            else:
+                logger.info(
+                    "Planning route: {} cause={} signals={}",
+                    decision.route.value,
+                    decision.cause,
+                    decision.signals,
+                )
+                if decision.route is Route.DIRECT:
+                    return None, None, None, None
 
         planner = _Planner(self._runner.provider, spec.model)
         tools_summary = self._runner.build_tools_summary(spec.tools)

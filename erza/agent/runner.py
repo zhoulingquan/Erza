@@ -187,6 +187,9 @@ class _TurnState:
     plan_snapshot: PlanSnapshot | None = None
     # P1-T4: per-turn no-progress detector (planned turns only).
     progress_tracker: ProgressTracker | None = None
+    # W11-3: mid-turn stall escalation state (restored from HEAD semantics).
+    consecutive_nontool_iterations: int = 0
+    escalated_this_turn: bool = False
     # W0-A1: cross-iteration evidence accumulator, filtered per step at
     # completion time. Cleared whenever the plan is replaced (step ids restart
     # at 1 after a replan, so stale observations would leak across plans).
@@ -449,6 +452,16 @@ class AgentRunner:
                 await hook.after_iteration(context)
                 break
 
+            # W11-3: stall check before governance (HEAD call-site parity).
+            (
+                planner,
+                plan,
+                planner_task_text,
+                planner_tools_summary,
+            ) = await self._maybe_escalate_mid_turn(
+                spec, state, planner, plan, planner_task_text, planner_tools_summary
+            )
+
             messages_for_model = await self.govern_messages(spec, messages, iteration)
             # Inject managed-plan guidance only after governance has repaired
             # historical messages. The returned copy is request-local and does
@@ -577,6 +590,53 @@ class AgentRunner:
         )
 
     # -- run() 阶段 helper (自 run 拆出, 语义与原内联实现逐句对应) ------------
+
+    async def _maybe_escalate_mid_turn(
+        self,
+        spec: AgentRunSpec,
+        state: _TurnState,
+        planner: Any,
+        plan: Any,
+        planner_task_text: str | None,
+        planner_tools_summary: str | None,
+    ) -> tuple[Any, Any, str | None, str | None]:
+        """ReAct 停滞检测 → 中途补建计划。返回 (planner, plan, task_text, tools_summary)。
+
+        条件不满足或升级失败时原样返回入参（plan 不变即无升级）。
+        """
+        # All five condition gates (HEAD semantics, D4):
+        # 1. plan is None — only for unplanned turns
+        # 2. not escalated_this_turn — at most once per turn
+        # 3. planning_policy is not None — explicit no-policy skips
+        # 4. planning_policy.force_plan is not False — embedder opt-out
+        # 5. consecutive_nontool_iterations >= 2 — stall threshold
+        if not (
+            plan is None
+            and not state.escalated_this_turn
+            and spec.planning_policy is not None
+            and spec.planning_policy.force_plan is not False
+            and state.consecutive_nontool_iterations >= 2
+        ):
+            return planner, plan, planner_task_text, planner_tools_summary
+
+        try:
+            planner, new_plan, planner_task_text, planner_tools_summary = await self.init_planner(
+                spec, force_plan=True
+            )
+            if new_plan is not None:
+                plan = new_plan
+                state.plan_snapshot = await self.emit_plan_snapshot(
+                    spec, plan, state.turn_id, stop_reason=None, origin="escalated"
+                )
+                from erza.agent.progress_policy import ProgressPolicy, ProgressTracker
+
+                state.progress_tracker = ProgressTracker(ProgressPolicy())
+                state.escalated_this_turn = True
+                state.consecutive_nontool_iterations = 0
+                logger.info("Escalated stalled ReAct turn to plan (turn {})", state.turn_id)
+        except Exception:
+            logger.warning("Mid-turn escalation failed; staying ReAct", exc_info=True)
+        return planner, plan, planner_task_text, planner_tools_summary
 
     async def _execute_tool_iteration(
         self,
@@ -709,6 +769,8 @@ class AgentRunner:
         activated = take_pending_plan()
         if activated is not None:
             plan = await self._adopt_activated_plan(spec, state, plan, activated)
+        # W11-3: reset stall counter on tool execution (HEAD T5 semantics).
+        state.consecutive_nontool_iterations = 0
         return "continue", plan
 
     async def _finalize_nontool_iteration(
@@ -736,6 +798,11 @@ class AgentRunner:
                 response.finish_reason,
                 spec.session_key or "default",
             )
+
+        # W11-3: track consecutive non-tool iterations for stall detection
+        # (only when plan is None — escalated/planned turns don't count).
+        if plan is None:
+            state.consecutive_nontool_iterations += 1
 
         clean = hook.finalize_content(context, response.content)
         action, response, raw_usage, clean = await self.retry_empty_response(
@@ -772,6 +839,7 @@ class AgentRunner:
 
         # Drain mid-turn injections before stream-end notification so a
         # resumed stream is not finalized prematurely by channel clients.
+        _old_injection_cycles = state.injection_cycles
         should_continue, state.injection_cycles = await self.try_drain_injections(
             spec,
             messages,
@@ -781,6 +849,12 @@ class AgentRunner:
             iteration=iteration,
             allow_goal_continue=True,
         )
+        # E2: a real injection arrival (new user message queued) resets the
+        # stall counter — the model is answering new input, not stalling.
+        # A goal-continue injection (system re-prompt on the same goal) does
+        # NOT reset.
+        if should_continue and state.injection_cycles > _old_injection_cycles:
+            state.consecutive_nontool_iterations = 0
         if should_continue:
             state.had_injections = True
 
@@ -921,17 +995,23 @@ class AgentRunner:
         await hook.after_iteration(context)
         return "break", plan
 
-    async def init_planner(self, spec: AgentRunSpec) -> tuple[Any, Any, str | None, str | None]:
+    async def init_planner(
+        self, spec: AgentRunSpec, *, force_plan: bool = False
+    ) -> tuple[Any, Any, str | None, str | None]:
         """Plan-and-Execute 初始化, 返回 (planner, plan, task_text, tools_summary)。
 
         创建计划失败时回退 ReAct-only (planner/plan 均为 None)。Typed as Any
         to avoid importing planner at module load time (keeps runner.py
         import-light).
 
+        ``force_plan=True`` skips routing and goes straight to plan creation
+        (used by mid-turn escalation). ``force_plan=False`` (default) is the
+        normal path.
+
         Migrated to :class:`PlanningReflectionService` (PR-5c); this method
         is a thin delegation keeping the AgentRunner surface unchanged.
         """
-        return await self.planning.init_planner(spec)
+        return await self.planning.init_planner(spec, force_plan=force_plan)
 
     def init_reflection(self, spec: AgentRunSpec) -> Any | None:
         """Optional reflection: produces "lesson learned" entries on failure or
