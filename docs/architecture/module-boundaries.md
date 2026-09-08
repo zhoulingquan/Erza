@@ -569,6 +569,7 @@
   有效替换计划继承计数并前置已完成历史；耗尽仍以 `plan_failed` 终止。
 - `ContextGovernor` 从 `BUILTIN_PIPELINE` 逐项实例化内置策略，包括 snip 后重复的
   orphan/backfill 清理；仅插件名称与内置名称去重。
-- P1/P2 明确延期：不新增任务复杂度 router、classifier LLM call、verifier LLM
-  call 或其它自适应路由策略。
+- 延期项演进：任务复杂度 router 与 classifier LLM call 已由 W11 落地
+  （`PlanningPolicy.classify` + 灰区 L2 判别，见 §2.16）；verifier LLM call
+  及其它自适应路由策略仍维持延期。
 
