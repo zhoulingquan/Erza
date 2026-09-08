@@ -15,7 +15,7 @@ import pytest
 
 from erza.agent.execution import tool_execution as tool_execution_module
 from erza.agent.execution.tool_execution import ToolExecutionCoordinator
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.runner import AgentRunner, AgentRunSpec
 from erza.agent.step_acceptance import (
     StepAcceptancePolicy,
@@ -193,7 +193,7 @@ async def test_observations_reach_step_evidence_across_iterations(
             model="test-model",
             max_iterations=6,
             max_tool_result_chars=1000,
-            planning_policy=PlanningPolicy(mode=PlanningMode.MANAGED),
+            planning_policy=PlanningPolicy(force_plan=True),
         )
     )
 
@@ -254,7 +254,7 @@ async def test_observations_cleared_after_replan(monkeypatch: pytest.MonkeyPatch
             model="test-model",
             max_iterations=6,
             max_tool_result_chars=1000,
-            planning_policy=PlanningPolicy(mode=PlanningMode.MANAGED),
+            planning_policy=PlanningPolicy(force_plan=True),
             fail_on_tool_error=True,
         )
     )

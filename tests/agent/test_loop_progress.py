@@ -8,6 +8,7 @@ import pytest
 
 import erza.agent.runner as runner_module
 from erza.agent.loop import AgentLoop
+from erza.agent.planning_policy import PlanningPolicy
 from erza.bus.events import InboundMessage
 from erza.bus.queue import MessageBus
 from erza.providers.base import LLMResponse, ToolCallRequest
@@ -391,7 +392,7 @@ class TestToolEventProgress:
 
         provider.chat_stream_with_retry = chat_stream_with_retry
         provider.chat_with_retry = AsyncMock()
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model", planning_policy=PlanningPolicy(force_plan=False))
         loop.tools.get_definitions = MagicMock(
             return_value=[
                 {"type": "function", "function": {"name": "write_file"}},

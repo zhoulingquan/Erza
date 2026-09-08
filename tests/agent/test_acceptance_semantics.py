@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from erza.agent.planner import PlanStep, StepStatus, effective_evidence_level
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.progress_policy import ProgressAction, ProgressPolicy, ProgressTracker
 from erza.agent.runner import AgentRunner, AgentRunSpec
 from erza.agent.step_acceptance import (
@@ -393,7 +393,7 @@ async def test_managed_turn_accepts_step_after_real_write(tmp_path: Any) -> None
             model="test-model",
             max_iterations=6,
             max_tool_result_chars=_MAX_RESULT_CHARS,
-            planning_policy=PlanningPolicy(mode=PlanningMode.MANAGED),
+            planning_policy=PlanningPolicy(force_plan=True),
         )
     )
 
@@ -427,7 +427,7 @@ async def test_managed_turn_keeps_step_open_when_only_text(tmp_path: Any) -> Non
             model="test-model",
             max_iterations=3,
             max_tool_result_chars=_MAX_RESULT_CHARS,
-            planning_policy=PlanningPolicy(mode=PlanningMode.MANAGED),
+            planning_policy=PlanningPolicy(force_plan=True),
         )
     )
 

@@ -81,18 +81,6 @@ class AgentLoopBuilder:
         self._kwargs["max_iterations"] = max_iterations
         return self
 
-    def with_fast_max_tool_iterations(
-        self, fast_max_tool_iterations: int | None
-    ) -> AgentLoopBuilder:
-        self._kwargs["fast_max_tool_iterations"] = fast_max_tool_iterations
-        return self
-
-    def with_managed_max_tool_iterations(
-        self, managed_max_tool_iterations: int | None
-    ) -> AgentLoopBuilder:
-        self._kwargs["managed_max_tool_iterations"] = managed_max_tool_iterations
-        return self
-
     def with_max_concurrent_subagents(
         self, max_concurrent_subagents: int | None
     ) -> AgentLoopBuilder:
@@ -245,18 +233,8 @@ class AgentLoopBuilder:
 
     # --- 便捷方法 ---
 
-    def with_use_planner(self, use_planner: bool) -> AgentLoopBuilder:
-        self._kwargs["use_planner"] = use_planner
-        return self
-
     def with_planning_policy(self, policy: PlanningPolicy) -> AgentLoopBuilder:
-        """Programmatic construction only; from_config() resolves from
-        use_planner fields for backward compatibility."""
         self._kwargs["planning_policy"] = policy
-        return self
-
-    def with_planner_model(self, planner_model: str | None) -> AgentLoopBuilder:
-        self._kwargs["planner_model"] = planner_model
         return self
 
     def with_planner_max_replans(self, planner_max_replans: int) -> AgentLoopBuilder:
@@ -279,30 +257,6 @@ class AgentLoopBuilder:
 
     def with_max_cost_per_turn_usd(self, max_cost_per_turn_usd: float | None) -> AgentLoopBuilder:
         self._kwargs["max_cost_per_turn_usd"] = max_cost_per_turn_usd
-        return self
-
-    def with_managed_max_input_tokens_per_turn(
-        self, managed_max_input_tokens_per_turn: int | None
-    ) -> AgentLoopBuilder:
-        self._kwargs["managed_max_input_tokens_per_turn"] = managed_max_input_tokens_per_turn
-        return self
-
-    def with_managed_max_cost_per_turn_usd(
-        self, managed_max_cost_per_turn_usd: float | None
-    ) -> AgentLoopBuilder:
-        self._kwargs["managed_max_cost_per_turn_usd"] = managed_max_cost_per_turn_usd
-        return self
-
-    def with_fast_max_input_tokens_per_turn(
-        self, fast_max_input_tokens_per_turn: int | None
-    ) -> AgentLoopBuilder:
-        self._kwargs["fast_max_input_tokens_per_turn"] = fast_max_input_tokens_per_turn
-        return self
-
-    def with_fast_max_cost_per_turn_usd(
-        self, fast_max_cost_per_turn_usd: float | None
-    ) -> AgentLoopBuilder:
-        self._kwargs["fast_max_cost_per_turn_usd"] = fast_max_cost_per_turn_usd
         return self
 
     def with_max_turn_wall_time_s(self, max_turn_wall_time_s: float | None) -> AgentLoopBuilder:
@@ -398,19 +352,11 @@ class AgentLoopBuilder:
             builder.with_max_tool_result_tokens(4000)
         builder.with_provider_retry_mode(defaults.provider_retry_mode)
         builder.with_tool_hint_max_length(defaults.tool_hint_max_length)
-        builder.with_use_planner(defaults.use_planner)
-        builder.with_planner_model(defaults.planner_model)
         builder.with_planner_max_replans(defaults.planner_max_replans)
         builder.with_enable_reflection(defaults.enable_reflection)
         builder.with_reflection_interval(defaults.reflection_interval)
         builder.with_max_input_tokens_per_turn(defaults.max_input_tokens_per_turn)
         builder.with_max_cost_per_turn_usd(defaults.max_cost_per_turn_usd)
-        builder.with_managed_max_input_tokens_per_turn(defaults.managed_max_input_tokens_per_turn)
-        builder.with_managed_max_cost_per_turn_usd(defaults.managed_max_cost_per_turn_usd)
-        builder.with_fast_max_input_tokens_per_turn(defaults.fast_max_input_tokens_per_turn)
-        builder.with_fast_max_cost_per_turn_usd(defaults.fast_max_cost_per_turn_usd)
-        builder.with_fast_max_tool_iterations(defaults.fast_max_tool_iterations)
-        builder.with_managed_max_tool_iterations(defaults.managed_max_tool_iterations)
         builder.with_max_turn_wall_time_s(defaults.max_turn_wall_time_s)
         builder.with_enable_step_verifier(defaults.enable_step_verifier)
         builder.with_restrict_to_workspace(config.tools.restrict_to_workspace)

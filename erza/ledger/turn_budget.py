@@ -10,10 +10,9 @@ output, and gives callers a hard cost ceiling per turn.
 
 All limits are optional: set a limit to None to disable that dimension.
 
-P2-T3 tiered defaults: AgentLoop resolves per-turn ceilings from the
-planning mode — MANAGED turns keep the P0 headroom below, FAST ReAct turns
-get the lower ordinary-turn ceilings. Explicit ``maxInputTokensPerTurn`` /
-``maxCostPerTurnUsd`` config always outranks the tiered defaults.
+Single-tier defaults: AgentLoop resolves per-turn ceilings from explicit
+``maxInputTokensPerTurn`` / ``maxCostPerTurnUsd`` config, falling back to
+the built-in defaults below.
 """
 
 from __future__ import annotations
@@ -21,15 +20,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-_DEFAULT_MAX_INPUT_TOKENS = 200_000  # ~5-10 turns of dense context
-_DEFAULT_MAX_OUTPUT_TOKENS = 50_000  # generous cap for multi-step reasoning
-_DEFAULT_MAX_COST_USD = 5.0  # hard cost ceiling per turn
-
-# P2-T3 tiered turn-budget defaults (resolved by AgentLoop._build_turn_budget).
-DEFAULT_MANAGED_MAX_INPUT_TOKENS = _DEFAULT_MAX_INPUT_TOKENS  # MANAGED keeps P0 headroom
-DEFAULT_MANAGED_MAX_COST_USD = _DEFAULT_MAX_COST_USD
-DEFAULT_FAST_MAX_INPUT_TOKENS = 80_000  # lower ordinary-turn ceiling
-DEFAULT_FAST_MAX_COST_USD = 2.0
+DEFAULT_MAX_INPUT_TOKENS = 200_000  # ~5-10 turns of dense context
+DEFAULT_MAX_OUTPUT_TOKENS = 50_000  # generous cap for multi-step reasoning
+DEFAULT_MAX_COST_USD = 5.0  # hard cost ceiling per turn
 
 
 @dataclass(slots=True)
@@ -49,9 +42,9 @@ class TurnBudget:
         pricing:           Optional dict mapping model name -> (input_per_1k, output_per_1k).
     """
 
-    max_input_tokens: int | None = _DEFAULT_MAX_INPUT_TOKENS
-    max_output_tokens: int | None = _DEFAULT_MAX_OUTPUT_TOKENS
-    max_cost_usd: float | None = _DEFAULT_MAX_COST_USD
+    max_input_tokens: int | None = DEFAULT_MAX_INPUT_TOKENS
+    max_output_tokens: int | None = DEFAULT_MAX_OUTPUT_TOKENS
+    max_cost_usd: float | None = DEFAULT_MAX_COST_USD
     max_iterations: int | None = None
     used_input: int = 0
     used_output: int = 0

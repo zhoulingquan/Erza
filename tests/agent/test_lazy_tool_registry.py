@@ -143,7 +143,7 @@ class _FakeProvider:
 def _minimal_config(tmp_path) -> Config:
     return Config.model_validate(
         {
-            "agents": {"defaults": {"usePlanner": True}},
+            "agents": {"defaults": {}},
             "providers": {"custom": {"api_key": "sk-test", "api_base": "http://test"}},
             "tools": {},
         }

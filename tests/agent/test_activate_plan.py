@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from erza.agent.planner import Plan, PlanStep, StepStatus
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.runner import AgentRunner, AgentRunSpec, _TurnState
 from erza.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from erza.tools.activate_plan import ActivatePlanTool, take_pending_plan
@@ -437,7 +437,7 @@ async def test_managed_turn_activation_emits_activated_snapshot(tmp_path) -> Non
             model="test-model",
             max_iterations=6,
             max_tool_result_chars=_MAX_RESULT_CHARS,
-            planning_policy=PlanningPolicy(mode=PlanningMode.MANAGED),
+            planning_policy=PlanningPolicy(force_plan=True),
             checkpoint_callback=_cb,
         )
     )

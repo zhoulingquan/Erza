@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from erza.agent.loop import AgentLoop, AgentLoopConfig
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
+from erza.agent.planning_policy import PlanningPolicy
 from erza.bus.queue import MessageBus
 from erza.config.schema import AgentDefaults
 from erza.tools.mcp_runtime import McpRuntime
@@ -75,16 +75,10 @@ def test_setter_routing_converges_on_provider_registry(tmp_path: Path) -> None:
     assert "_context_window_tokens" not in loop.__dict__
 
 
-def test_fast_tier_uses_default_fast_max_tool_iterations(tmp_path: Path) -> None:
+def test_default_max_tool_iterations(tmp_path: Path) -> None:
     loop = make_loop(tmp_path, provider=_test_provider())
 
-    assert loop.max_iterations == AgentDefaults().fast_max_tool_iterations
-
-
-def test_managed_policy_uses_default_managed_max_tool_iterations(tmp_path: Path) -> None:
-    loop = _direct_loop(tmp_path, planning_policy=PlanningPolicy(mode=PlanningMode.MANAGED))
-
-    assert loop.max_iterations == AgentDefaults().managed_max_tool_iterations
+    assert loop.max_iterations == AgentDefaults().max_tool_iterations
 
 
 def test_tool_result_chars_derived_from_tokens(tmp_path: Path) -> None:
@@ -96,16 +90,14 @@ def test_tool_result_chars_derived_from_tokens(tmp_path: Path) -> None:
 
 def test_explicit_planning_policy_wins(tmp_path: Path) -> None:
     policy = PlanningPolicy(
-        mode=PlanningMode.MANAGED,
-        planner_model="planner-x",
+        force_plan=True,
         planner_max_replans=7,
     )
     loop = _direct_loop(tmp_path, planning_policy=policy)
 
     assert loop.planning_policy is policy
-    assert loop.use_planner is True
-    assert loop.planner_model == "planner-x"
-    assert loop.planner_max_replans == 7
+    assert loop.planning_policy.force_plan is True
+    assert loop.planning_policy.planner_max_replans == 7
 
 
 def test_init_calls_phase_methods_in_order(tmp_path: Path, monkeypatch) -> None:

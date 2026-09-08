@@ -1,13 +1,14 @@
-"""Plan-and-Execute mode for AgentRunner.
+"""Plan-and-Execute for AgentRunner.
 
-When enabled via AgentRunSpec.use_planner=True, the runner first asks the
-LLM to decompose the task into ordered steps (a Plan), then executes each
-step using the normal ReAct tool loop. Failed steps trigger a replan with
-the remaining steps, carrying the failure reason forward.
+When the deterministic PlanningPolicy router decides a turn warrants a plan,
+the runner first asks the LLM (the execution model, single-model design) to
+decompose the task into ordered steps (a Plan), then executes each step using
+the normal ReAct tool loop. Failed steps trigger a replan with the remaining
+steps, carrying the failure reason forward.
 
 This module is self-contained: it does not modify the existing ReAct loop
-in runner.py. The Planner class is called by run() only when use_planner
-is True; otherwise the legacy loop runs unchanged.
+in runner.py. The Planner class is called by run() only when the planning
+router says so; otherwise the plain loop runs unchanged.
 """
 
 from __future__ import annotations

@@ -14,6 +14,7 @@ from erza.agent.planner import (
     _normalize_evidence_level,
     effective_evidence_level,
 )
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.runner import AgentRunner, AgentRunSpec
 from erza.providers.base import LLMProvider, LLMResponse
 
@@ -111,7 +112,7 @@ async def test_planner_receives_full_latest_user_message() -> None:
         model="test-model",
         max_iterations=1,
         max_tool_result_chars=1000,
-        use_planner=True,
+        planning_policy=PlanningPolicy(force_plan=True),
     )
 
     _planner, plan, task_text, _tools_summary = await runner.init_planner(spec)
@@ -210,7 +211,7 @@ async def test_end_to_end_tool_level_step_reaches_acceptance() -> None:
         model="test-model",
         max_iterations=1,
         max_tool_result_chars=1000,
-        use_planner=True,
+        planning_policy=PlanningPolicy(force_plan=True),
     )
 
     _planner, plan, _task_text, _summary = await AgentRunner(provider).init_planner(spec)

@@ -11,6 +11,7 @@ import pytest
 from erza.agent.execution.model_request import ModelRequestExecutor
 from erza.agent.hook import AgentHook, AgentHookContext
 from erza.agent.loop import AgentLoop
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.reflection import Reflection
 from erza.agent.runner import AgentRunner, AgentRunSpec
 from erza.bus.events import InboundMessage
@@ -114,8 +115,7 @@ class TestTurnCallLedger:
             provider=provider,
             workspace=tmp_path,
             model="test-model",
-            use_planner=True,
-            planner_model="test-model",
+            planning_policy=PlanningPolicy(force_plan=True),
         )
         loop.tools.get_definitions = MagicMock(
             return_value=[
@@ -188,8 +188,7 @@ class TestTurnCallLedger:
             provider=provider,
             workspace=tmp_path,
             model="test-model",
-            use_planner=True,
-            planner_model="test-model",
+            planning_policy=PlanningPolicy(force_plan=True),
             max_cost_per_turn_usd=0.03,
         )
         loop.tools.get_definitions = MagicMock(

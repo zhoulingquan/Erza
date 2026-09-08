@@ -22,7 +22,7 @@ from erza.agent.execution.recovery import (
 )
 from erza.agent.execution.tool_execution import ToolExecutionCoordinator
 from erza.agent.hook import AgentHook, AgentHookContext
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.provider_registry import ProviderRegistry
 from erza.agent.step_acceptance import ToolObservation
 from erza.ledger import (
@@ -112,15 +112,9 @@ class AgentRunSpec:
     # stop_reason="budget_exceeded". None = no budget tracking (legacy behavior).
     # Typed as Any to avoid a circular import with erza.ledger.turn_budget.
     turn_budget: Any | None = None
-    # Plan-and-Execute mode. When True, the runner first decomposes the task
-    # into steps via a Planner LLM call, then executes each step via ReAct.
-    # Failed steps trigger replan (up to planner_max_replans). Default False
-    # preserves the legacy pure-ReAct behavior.
-    use_planner: bool = False
-    planner_model: str | None = None  # model for planning LLM calls; None = use spec.model
-    planner_max_replans: int = 3
-    # Explicit PlanningPolicy (P1). When set, it takes priority over the
-    # use_planner/planner_model/planner_max_replans legacy fields above.
+    # Plan-and-Execute: the deterministic PlanningPolicy router decides per
+    # turn whether the task warrants a plan (Planner reuses spec.model).
+    # Failed steps trigger replan (up to planning_policy.planner_max_replans).
     planning_policy: PlanningPolicy | None = None
     # Reflection: when enabled, produce a "lesson learned" on failure or every
     # reflection_interval iterations, appended to memory/reflections.jsonl for
@@ -157,7 +151,7 @@ class AgentRunResult:
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     had_injections: bool = False
     budget_exceeded: bool = False
-    plan: Any | None = None  # Plan | None, populated when use_planner=True
+    plan: Any | None = None  # Plan | None, populated when the planning router plans this turn
     # Usage from the last LLM call in this run (not cumulative). Represents
     # the actual context window footprint at the end of the turn.
     last_call_usage: dict[str, int] = field(default_factory=dict)
@@ -191,12 +185,8 @@ class _TurnState:
     # P1-T2: per-turn identifier and the latest durable plan snapshot.
     turn_id: str | None = None
     plan_snapshot: PlanSnapshot | None = None
-    # P1-T4: per-turn no-progress detector (MANAGED mode only).
+    # P1-T4: per-turn no-progress detector (planned turns only).
     progress_tracker: ProgressTracker | None = None
-    # T5: per-turn escalation guard.
-    escalated_this_turn: bool = False
-    # T5: FAST mode stall detection - consecutive iterations without tool calls.
-    consecutive_nontool_iterations: int = 0
     # W0-A1: cross-iteration evidence accumulator, filtered per step at
     # completion time. Cleared whenever the plan is replaced (step ids restart
     # at 1 after a replan, so stale observations would leak across plans).
@@ -459,21 +449,6 @@ class AgentRunner:
                 await hook.after_iteration(context)
                 break
 
-            # T5: FAST -> MANAGED escalation check (before model request).
-            (
-                planner,
-                plan,
-                planner_task_text,
-                planner_tools_summary,
-            ) = await self._maybe_escalate_to_managed(
-                spec,
-                state,
-                planner,
-                plan,
-                planner_task_text,
-                planner_tools_summary,
-            )
-
             messages_for_model = await self.govern_messages(spec, messages, iteration)
             # Inject managed-plan guidance only after governance has repaired
             # historical messages. The returned copy is request-local and does
@@ -603,70 +578,6 @@ class AgentRunner:
 
     # -- run() 阶段 helper (自 run 拆出, 语义与原内联实现逐句对应) ------------
 
-    async def _maybe_escalate_to_managed(
-        self,
-        spec: AgentRunSpec,
-        state: _TurnState,
-        planner: Any,
-        plan: Any,
-        planner_task_text: str | None,
-        planner_tools_summary: str | None,
-    ) -> tuple[Any, Any, str | None, str | None]:
-        """FAST 停滞检测 → MANAGED 升级。返回 (planner, plan, task_text, tools_summary)。
-
-        条件不满足或升级失败时原样返回入参（plan 不变即无升级）。
-        """
-        # Only in FAST mode (plan is None), not already escalated this turn,
-        # and after at least 2 consecutive non-tool iterations (stall).
-        if not (
-            plan is None
-            and not state.escalated_this_turn
-            and spec.planning_policy is not None
-            and state.consecutive_nontool_iterations >= 2
-        ):
-            return planner, plan, planner_task_text, planner_tools_summary
-        new_mode = spec.planning_policy.escalate(
-            PlanningMode.FAST,
-            stall_detected=True,
-            already_escalated=state.escalated_this_turn,
-        )
-        if new_mode is PlanningMode.MANAGED:
-            try:
-                # Create a plan using the existing planner infrastructure
-                (
-                    planner,
-                    new_plan,
-                    planner_task_text,
-                    planner_tools_summary,
-                ) = await self.init_planner(spec)
-                if new_plan is not None:
-                    plan = new_plan
-                    state.plan_snapshot = await self.emit_plan_snapshot(
-                        spec, plan, state.turn_id, stop_reason=None
-                    )
-                    # Update snapshot origin to "escalated"
-                    if state.plan_snapshot is not None:
-                        state.plan_snapshot = state.plan_snapshot.with_origin("escalated")
-                    from erza.agent.progress_policy import (
-                        ProgressPolicy,
-                        ProgressTracker,
-                    )
-
-                    state.progress_tracker = ProgressTracker(ProgressPolicy())
-                    state.escalated_this_turn = True
-                    state.consecutive_nontool_iterations = 0
-                    logger.info(
-                        "Escalated FAST -> MANAGED for turn {}",
-                        state.turn_id,
-                    )
-            except Exception:
-                logger.warning(
-                    "Escalation FAST->MANAGED failed; staying FAST",
-                    exc_info=True,
-                )
-                # Fall through to original FAST behavior
-        return planner, plan, planner_task_text, planner_tools_summary
-
     async def _execute_tool_iteration(
         self,
         spec: AgentRunSpec,
@@ -791,8 +702,6 @@ class AgentRunner:
         if _drained:
             state.had_injections = True
         await hook.after_iteration(context)
-        # T5: Reset FAST stall counter on tool execution.
-        state.consecutive_nontool_iterations = 0
         # A tool batch may have activated a plan through ``activate_plan``;
         # adopt it now so the next iteration's step guidance drives it.
         from erza.tools.activate_plan import take_pending_plan
@@ -827,10 +736,6 @@ class AgentRunner:
                 response.finish_reason,
                 spec.session_key or "default",
             )
-
-        # T5: Track consecutive non-tool iterations in FAST mode for stall detection.
-        if plan is None:
-            state.consecutive_nontool_iterations += 1
 
         clean = hook.finalize_content(context, response.content)
         action, response, raw_usage, clean = await self.retry_empty_response(

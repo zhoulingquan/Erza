@@ -22,7 +22,7 @@ from erza.agent.autocompact import AutoCompact
 from erza.agent.context import ContextBuilder
 from erza.agent.dispatch import UNIFIED_SESSION_KEY, MessageDispatcher
 from erza.agent.hook import AgentHook, CompositeHook
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.progress_hook import AgentProgressHook
 from erza.agent.provider_registry import ProviderRegistry
 from erza.agent.response import ResponseAssembler
@@ -162,26 +162,15 @@ class AgentLoopConfig:
     preset_snapshot_loader: "preset_helpers.PresetSnapshotLoader | None" = None
     runtime_model_publisher: "Callable[[str, str | None], None] | None" = None
     structured_memory_config: StructuredMemoryConfig | None = None
-    use_planner: bool = False
-    planner_model: str | None = None
     planner_max_replans: int = 3
-    # Explicit PlanningPolicy (P1). When set, AgentLoop derives
-    # use_planner/planner_model/planner_max_replans from it instead.
+    # Deterministic planning router. Decides per turn whether the task
+    # warrants a plan (Planner reuses the execution model).
     planning_policy: PlanningPolicy | None = None
     enable_reflection: bool = False
     reflection_interval: int = 5
     max_input_tokens_per_turn: int | None = None
     max_cost_per_turn_usd: float | None = None
-    # P2-T3 tiered per-turn ceilings; resolved by planning mode when the
-    # explicit fields above are unset.
-    managed_max_input_tokens_per_turn: int | None = None
-    managed_max_cost_per_turn_usd: float | None = None
-    fast_max_input_tokens_per_turn: int | None = None
-    fast_max_cost_per_turn_usd: float | None = None
     max_turn_wall_time_s: float | None = None
-    # T1: Tiered max tool iterations per planning mode
-    fast_max_tool_iterations: int | None = None
-    managed_max_tool_iterations: int | None = None
     # T5: Enable LLM verifier fallback for step acceptance
     enable_step_verifier: bool = False
 
@@ -287,45 +276,31 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
         return LLMRuntime(self.provider, self.model)
 
     def _build_turn_budget(self):
-        """Construct a fresh TurnBudget for one turn (P2-T3 tiered resolution).
+        """Construct a fresh TurnBudget for one turn.
 
-        Priority: explicit ``max_input_tokens_per_turn`` /
-        ``max_cost_per_turn_usd`` wins; otherwise the planning-mode tier
-        supplies the ceiling (MANAGED keeps P0 headroom 200k/$5; FAST lowers
-        ordinary-turn ceilings to 80k/$2). Cost tracking is only *required*
-        when the legacy cost field is set explicitly — tiered cost caps stay
-        advisory when the provider does not report cost, so default
-        deployments never hard-fail on missing pricing.
+        Single-tier resolution: explicit ``max_input_tokens_per_turn`` /
+        ``max_cost_per_turn_usd`` wins; otherwise the built-in defaults
+        (200k input / $5) apply. Cost tracking is only *required* when the
+        explicit cost field is set — the default cost cap stays advisory
+        when the provider does not report cost, so default deployments
+        never hard-fail on missing pricing.
         """
         from erza.ledger.turn_budget import (
-            DEFAULT_FAST_MAX_COST_USD,
-            DEFAULT_FAST_MAX_INPUT_TOKENS,
-            DEFAULT_MANAGED_MAX_COST_USD,
-            DEFAULT_MANAGED_MAX_INPUT_TOKENS,
+            DEFAULT_MAX_COST_USD,
+            DEFAULT_MAX_INPUT_TOKENS,
             TurnBudget,
         )
 
-        managed = self.planning_policy.mode == PlanningMode.MANAGED
-        if self._max_input_tokens_per_turn is not None:
-            max_input = self._max_input_tokens_per_turn
-        elif managed:
-            max_input = self._managed_max_input_tokens_per_turn
-            if max_input is None:
-                max_input = DEFAULT_MANAGED_MAX_INPUT_TOKENS
-        else:
-            max_input = self._fast_max_input_tokens_per_turn
-            if max_input is None:
-                max_input = DEFAULT_FAST_MAX_INPUT_TOKENS
-        if self._max_cost_per_turn_usd is not None:
-            max_cost = self._max_cost_per_turn_usd
-        elif managed:
-            max_cost = self._managed_max_cost_per_turn_usd
-            if max_cost is None:
-                max_cost = DEFAULT_MANAGED_MAX_COST_USD
-        else:
-            max_cost = self._fast_max_cost_per_turn_usd
-            if max_cost is None:
-                max_cost = DEFAULT_FAST_MAX_COST_USD
+        max_input = (
+            self._max_input_tokens_per_turn
+            if self._max_input_tokens_per_turn is not None
+            else DEFAULT_MAX_INPUT_TOKENS
+        )
+        max_cost = (
+            self._max_cost_per_turn_usd
+            if self._max_cost_per_turn_usd is not None
+            else DEFAULT_MAX_COST_USD
+        )
         return TurnBudget(
             max_input_tokens=max_input,
             max_output_tokens=None,
@@ -428,27 +403,11 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
 
     def _init_execution_limits(self, cfg: AgentLoopConfig, defaults: AgentDefaults) -> None:
         """迭代/上下文窗口/工具结果预算派生。C 区段。"""
-        # T1: Explicit max_iterations wins; otherwise select tier by planning mode
+        # Explicit max_iterations wins; otherwise the config default applies.
         if cfg.max_iterations is not None:
             self.max_iterations = cfg.max_iterations
         else:
-            managed = (
-                cfg.planning_policy.mode == PlanningMode.MANAGED
-                if cfg.planning_policy
-                else cfg.use_planner
-            )
-            if managed:
-                self.max_iterations = (
-                    cfg.managed_max_tool_iterations
-                    if cfg.managed_max_tool_iterations is not None
-                    else defaults.managed_max_tool_iterations
-                )
-            else:
-                self.max_iterations = (
-                    cfg.fast_max_tool_iterations
-                    if cfg.fast_max_tool_iterations is not None
-                    else defaults.fast_max_tool_iterations
-                )
+            self.max_iterations = defaults.max_tool_iterations
         self.context_window_tokens = (
             cfg.context_window_tokens
             if cfg.context_window_tokens is not None
@@ -500,25 +459,15 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
         """规划策略、审批策略与工作区解析器装配。D 区段。"""
         # Execution policies are propagated through the bundle for both
         # from_config() and legacy direct AgentLoop(...) construction.
-        # PlanningPolicy (P1): an explicitly provided policy wins; otherwise
-        # resolve from the legacy use_planner fields for backward compat.
-        if cfg.planning_policy is not None:
-            self.planning_policy = cfg.planning_policy
-        else:
-            self.planning_policy = PlanningPolicy.from_use_planner(
-                cfg.use_planner, cfg.planner_model, cfg.planner_max_replans
-            )
-        self.use_planner = self.planning_policy.mode == PlanningMode.MANAGED
-        self.planner_model = self.planning_policy.planner_model
-        self.planner_max_replans = self.planning_policy.planner_max_replans
+        # PlanningPolicy: an explicitly provided policy wins; otherwise the
+        # deterministic router routes per turn (single-model design).
+        self.planning_policy = cfg.planning_policy or PlanningPolicy(
+            planner_max_replans=cfg.planner_max_replans,
+        )
         self.enable_reflection = cfg.enable_reflection
         self.reflection_interval = cfg.reflection_interval
         self._max_input_tokens_per_turn = cfg.max_input_tokens_per_turn
         self._max_cost_per_turn_usd = cfg.max_cost_per_turn_usd
-        self._managed_max_input_tokens_per_turn = cfg.managed_max_input_tokens_per_turn
-        self._managed_max_cost_per_turn_usd = cfg.managed_max_cost_per_turn_usd
-        self._fast_max_input_tokens_per_turn = cfg.fast_max_input_tokens_per_turn
-        self._fast_max_cost_per_turn_usd = cfg.fast_max_cost_per_turn_usd
         self.tools_config = _tc
         self.web_config = _tc.web
         self.exec_config = _tc.exec
@@ -1348,10 +1297,7 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
                 sustained_goal_active(session.metadata) if session is not None else False
             ),
             goal_continue_message=goal_continue,
-            # Plan-and-Execute / Reflection / TurnBudget (opt-in via config).
-            use_planner=self.use_planner,
-            planner_model=self.planner_model,
-            planner_max_replans=self.planner_max_replans,
+            # Plan-and-Execute / Reflection / TurnBudget (planning router decides per turn).
             planning_policy=self.planning_policy,
             enable_reflection=self.enable_reflection,
             reflection_interval=self.reflection_interval,

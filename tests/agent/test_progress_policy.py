@@ -18,7 +18,7 @@ import pytest
 import erza.agent.progress_policy as progress_policy_module
 from erza.agent.hook import AgentHook, AgentHookContext
 from erza.agent.planner import Plan, Planner, PlanStep, StepStatus
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.progress_policy import (
     ProgressAction,
     ProgressPolicy,
@@ -270,8 +270,7 @@ async def test_managed_run_replans_stalling_step_and_tracks_progress(monkeypatch
             max_iterations=20,
             max_tool_result_chars=1000,
             planning_policy=PlanningPolicy(
-                mode=PlanningMode.MANAGED,
-                planner_model="test-model",
+                force_plan=True,
                 planner_max_replans=1,
             ),
         )

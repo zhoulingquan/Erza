@@ -292,6 +292,22 @@ def _migrate_config(data: dict) -> dict:
     if isinstance(defaults, dict):
         defaults.pop("memoryWindow", None)
         defaults.pop("memory_window", None)
+        # P4 planning simplification: dual-model/tiered-budget fields removed.
+        # Planning is now routed per turn by PlanningPolicy.should_plan; the
+        # planner always reuses the execution model (single budget tier).
+        for legacy_key in (
+            "usePlanner",
+            "use_planner",
+            "plannerModel",
+            "planner_model",
+            "fastMaxToolIterations",
+            "managedMaxToolIterations",
+            "fastMaxInputTokensPerTurn",
+            "managedMaxInputTokensPerTurn",
+            "fastMaxCostPerTurnUsd",
+            "managedMaxCostPerTurnUsd",
+        ):
+            defaults.pop(legacy_key, None)
 
     # Move tools.exec.restrictToWorkspace → tools.restrictToWorkspace
     tools = result.get("tools", {})

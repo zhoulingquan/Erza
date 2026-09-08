@@ -194,18 +194,6 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     fallback_models: list[FallbackCandidate] = Field(default_factory=list)
     max_tool_iterations: int = 200
-    fast_max_tool_iterations: int = Field(
-        default=50,
-        ge=1,
-        validation_alias=AliasChoices("fastMaxToolIterations"),
-        serialization_alias="fastMaxToolIterations",
-    )
-    managed_max_tool_iterations: int = Field(
-        default=200,
-        ge=1,
-        validation_alias=AliasChoices("managedMaxToolIterations"),
-        serialization_alias="managedMaxToolIterations",
-    )
     # None = 自适应：根据 provider.is_local 选择默认值（本地 1，云端 4）。
     # 显式指定 int 时，按用户配置生效（向下兼容旧配置）。
     max_concurrent_subagents: int | None = Field(default=None, ge=1)
@@ -233,9 +221,7 @@ class AgentDefaults(Base):
         None  # low / medium / high / adaptive / none — LLM thinking effort; None preserves the provider default
     )
     timezone: str = "UTC"  # IANA timezone, e.g. "Asia/Shanghai", "America/New_York"
-    bot_name: str = (
-        "Erza"  # Display name shown in CLI prompts (e.g. "{name} is thinking...")
-    )
+    bot_name: str = "Erza"  # Display name shown in CLI prompts (e.g. "{name} is thinking...")
     bot_icon: str = "🐱"  # Short icon (emoji or text) shown next to the bot name in CLI; "" to omit
     unified_session: bool = (
         False  # Share one session across all channels (single-user multi-device)
@@ -267,22 +253,12 @@ class AgentDefaults(Base):
         validation_alias=AliasChoices("checkpointRatio"),
         serialization_alias="checkpointRatio",
     )  # 提前 checkpoint 触发比例 (0.7 = 70% 预算时触发归档，借鉴 MiMo Code 提前提取思想；1.0 = 旧行为)
-    use_planner: bool = Field(
-        default=False,
-        validation_alias=AliasChoices("usePlanner"),
-        serialization_alias="usePlanner",
-    )  # Enable plan-and-execute: decompose complex tasks before execution
-    planner_model: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("plannerModel"),
-        serialization_alias="plannerModel",
-    )  # Model for planning (None = use main model)
     planner_max_replans: int = Field(
         default=3,
         ge=0,
         validation_alias=AliasChoices("plannerMaxReplans"),
         serialization_alias="plannerMaxReplans",
-    )  # Max replan attempts on step failure
+    )  # Max replan attempts on step failure (planning router decides per turn)
     enable_reflection: bool = Field(
         default=False,
         validation_alias=AliasChoices("enableReflection"),
@@ -305,31 +281,7 @@ class AgentDefaults(Base):
         ge=0.0,
         validation_alias=AliasChoices("maxCostPerTurnUsd"),
         serialization_alias="maxCostPerTurnUsd",
-    )  # Per-turn cost budget in USD (None = unlimited; overrides tiered defaults)
-    managed_max_input_tokens_per_turn: int | None = Field(
-        default=None,
-        ge=1000,
-        validation_alias=AliasChoices("managedMaxInputTokensPerTurn"),
-        serialization_alias="managedMaxInputTokensPerTurn",
-    )  # MANAGED-mode input ceiling (None = P0 default 200k)
-    managed_max_cost_per_turn_usd: float | None = Field(
-        default=None,
-        ge=0.0,
-        validation_alias=AliasChoices("managedMaxCostPerTurnUsd"),
-        serialization_alias="managedMaxCostPerTurnUsd",
-    )  # MANAGED-mode cost ceiling (None = P0 default $5)
-    fast_max_input_tokens_per_turn: int | None = Field(
-        default=80_000,
-        ge=1000,
-        validation_alias=AliasChoices("fastMaxInputTokensPerTurn"),
-        serialization_alias="fastMaxInputTokensPerTurn",
-    )  # FAST-mode input ceiling (lower ordinary-turn ceiling)
-    fast_max_cost_per_turn_usd: float | None = Field(
-        default=2.0,
-        ge=0.0,
-        validation_alias=AliasChoices("fastMaxCostPerTurnUsd"),
-        serialization_alias="fastMaxCostPerTurnUsd",
-    )  # FAST-mode cost ceiling (lower ordinary-turn ceiling)
+    )  # Per-turn cost budget in USD (None = built-in default $5)
     max_turn_wall_time_s: float | None = Field(
         default=None,
         ge=10.0,
@@ -551,9 +503,7 @@ class ToolsConfig(Base, metaclass=_lazy_rebuild_meta(type(Base))):
         default_factory=lambda: _lazy_default("erza.tools.shell", "ExecToolConfig")
     )
     exec_session: ExecSessionToolConfig = Field(
-        default_factory=lambda: _lazy_default(
-            "erza.tools.exec_session", "ExecSessionToolConfig"
-        )
+        default_factory=lambda: _lazy_default("erza.tools.exec_session", "ExecSessionToolConfig")
     )
     my: MyToolConfig = Field(
         default_factory=lambda: _lazy_default("erza.tools.self", "MyToolConfig")

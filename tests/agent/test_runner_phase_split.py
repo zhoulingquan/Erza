@@ -1,8 +1,7 @@
 """W2-2: main-loop phase split — pure-move regression lock.
 
-Covers ``PlanSnapshot.with_origin``, the ``_maybe_escalate_to_managed`` phase
-method (escalate / already-escalated / failure), the god-method size guard on
-``_run_with_ledger``, and a minimal managed-turn smoke with receipt acceptance.
+Covers ``PlanSnapshot.with_origin``, the god-method size guard on
+``_run_with_ledger``, and a minimal planned-turn smoke with receipt acceptance.
 """
 
 from __future__ import annotations
@@ -15,12 +14,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from loguru import logger as loguru_logger
 
 from erza.agent.plan_snapshot import PlanSnapshot
 from erza.agent.planner import Plan, PlanStep, StepStatus
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
-from erza.agent.runner import AgentRunner, AgentRunSpec, _TurnState
+from erza.agent.planning_policy import PlanningPolicy
+from erza.agent.runner import AgentRunner, AgentRunSpec
 from erza.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from erza.tools.filesystem import WriteFileTool
 from erza.tools.registry import ToolRegistry
@@ -41,17 +39,6 @@ def _make_plan() -> Plan:
     )
 
 
-def _fast_spec() -> AgentRunSpec:
-    return AgentRunSpec(
-        initial_messages=[{"role": "user", "content": "test task"}],
-        tools=_make_tools(),
-        model="test-model",
-        max_iterations=5,
-        max_tool_result_chars=1000,
-        planning_policy=PlanningPolicy(mode=PlanningMode.FAST),
-    )
-
-
 # --- 1: with_origin keeps every other field identical ------------------------
 
 
@@ -69,115 +56,7 @@ def test_with_origin_changes_only_origin() -> None:
         snapshot.origin = "escalated"  # type: ignore[misc]
 
 
-# --- 2: _maybe_escalate_to_managed escalates on FAST stall --------------------
-
-
-@pytest.mark.asyncio
-async def test_maybe_escalate_escalates_on_fast_stall(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runner = AgentRunner(MagicMock(spec=LLMProvider))
-    spec = _fast_spec()
-    state = _TurnState()
-    state.turn_id = "turn-1"
-    state.consecutive_nontool_iterations = 2
-    plan = _make_plan()
-    planner_sentinel = object()
-    calls = {"init_planner": 0}
-
-    async def fake_init_planner(spec: AgentRunSpec) -> tuple[Any, Any, str | None, str | None]:
-        calls["init_planner"] += 1
-        return planner_sentinel, plan, "task text", "tools summary"
-
-    async def fake_emit(
-        spec: AgentRunSpec,
-        plan: Any,
-        turn_id: str,
-        stop_reason: str | None = None,
-        origin: str = "planner",
-    ) -> PlanSnapshot:
-        return PlanSnapshot.from_plan(plan, turn_id, stop_reason, origin=origin)
-
-    monkeypatch.setattr(runner, "init_planner", fake_init_planner)
-    monkeypatch.setattr(runner, "emit_plan_snapshot", fake_emit)
-
-    out_planner, out_plan, out_task, out_summary = await runner._maybe_escalate_to_managed(
-        spec, state, None, None, None, None
-    )
-
-    assert out_plan is plan
-    assert out_planner is planner_sentinel
-    assert out_task == "task text"
-    assert out_summary == "tools summary"
-    assert calls["init_planner"] == 1
-    assert state.escalated_this_turn is True
-    assert state.consecutive_nontool_iterations == 0
-    assert state.progress_tracker is not None
-    assert state.plan_snapshot is not None
-    assert state.plan_snapshot.origin == "escalated"
-
-
-@pytest.mark.asyncio
-async def test_maybe_escalate_skips_when_already_escalated(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runner = AgentRunner(MagicMock(spec=LLMProvider))
-    spec = _fast_spec()
-    state = _TurnState()
-    state.turn_id = "turn-1"
-    state.escalated_this_turn = True
-    state.consecutive_nontool_iterations = 5
-    original_plan = _make_plan()
-    original_planner = object()
-
-    async def fail_init(spec: AgentRunSpec) -> tuple[Any, Any, str | None, str | None]:
-        raise AssertionError("_init_planner must not be called")
-
-    monkeypatch.setattr(runner, "init_planner", fail_init)
-
-    result = await runner._maybe_escalate_to_managed(
-        spec, state, original_planner, original_plan, "task", "summary"
-    )
-
-    assert result == (original_planner, original_plan, "task", "summary")
-
-
-# --- 3: escalation failure falls back to FAST with a warning ------------------
-
-
-@pytest.mark.asyncio
-async def test_maybe_escalate_failure_returns_original_inputs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runner = AgentRunner(MagicMock(spec=LLMProvider))
-    spec = _fast_spec()
-    state = _TurnState()
-    state.turn_id = "turn-1"
-    state.consecutive_nontool_iterations = 2
-
-    async def raising_init(spec: AgentRunSpec) -> tuple[Any, Any, str | None, str | None]:
-        raise RuntimeError("planner down")
-
-    monkeypatch.setattr(runner, "init_planner", raising_init)
-
-    warnings: list[str] = []
-    handler_id = loguru_logger.add(lambda message: warnings.append(str(message)), level="WARNING")
-    try:
-        out_planner, out_plan, out_task, out_summary = await runner._maybe_escalate_to_managed(
-            spec, state, "planner-x", None, None, None
-        )
-    finally:
-        loguru_logger.remove(handler_id)
-
-    assert out_planner == "planner-x"
-    assert out_plan is None
-    assert out_task is None
-    assert out_summary is None
-    assert state.escalated_this_turn is False
-    assert any("Escalation FAST->MANAGED failed" in w for w in warnings)
-
-
-# --- 4: structural guard — the main loop stays an orchestrator ---------------
+# --- 2: structural guard — the main loop stays an orchestrator ---------------
 
 
 def test_run_with_ledger_is_not_a_god_method() -> None:
@@ -231,7 +110,7 @@ async def test_managed_turn_smoke_with_receipt_acceptance(tmp_path: Path) -> Non
             model="test-model",
             max_iterations=8,
             max_tool_result_chars=1000,
-            planning_policy=PlanningPolicy(mode=PlanningMode.MANAGED),
+            planning_policy=PlanningPolicy(force_plan=True),
         )
     )
 

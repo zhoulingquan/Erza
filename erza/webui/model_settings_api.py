@@ -354,8 +354,6 @@ def model_settings_payload(config: Any) -> dict[str, Any]:
             "temperature": effective_preset.temperature,
             "reasoning_effort": effective_preset.reasoning_effort,
             "tool_hint_max_length": defaults.tool_hint_max_length,
-            "use_planner": defaults.use_planner,
-            "planner_model": defaults.planner_model,
             "planner_max_replans": defaults.planner_max_replans,
         },
         "model_presets": model_presets,
@@ -432,28 +430,6 @@ def update_agent_settings(query: QueryParams) -> dict[str, Any]:
             raise WebUISettingsError("tool_hint_max_length must be between 20 and 500")
         if defaults.tool_hint_max_length != parsed:
             defaults.tool_hint_max_length = parsed
-            changed = True
-            restart_required = True
-
-    # Plan & Execute 双模型配置:开关 + 规划模型选择。
-    raw_use_planner = _query_first_alias(query, "use_planner", "usePlanner")
-    if raw_use_planner is not None:
-        from ._query import _parse_bool
-
-        use_planner = _parse_bool(raw_use_planner, "use_planner")
-        if defaults.use_planner != use_planner:
-            defaults.use_planner = use_planner
-            changed = True
-            restart_required = True
-
-    raw_planner_model = _query_first_alias(query, "planner_model", "plannerModel")
-    if raw_planner_model is not None:
-        preset_name = raw_planner_model.strip()
-        preset_value = None if not preset_name or preset_name == "default" else preset_name
-        if preset_value is not None and preset_value not in config.model_presets:
-            raise WebUISettingsError("unknown planner model preset")
-        if defaults.planner_model != preset_value:
-            defaults.planner_model = preset_value
             changed = True
             restart_required = True
 

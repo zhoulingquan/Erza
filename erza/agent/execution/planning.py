@@ -112,29 +112,21 @@ class PlanningReflectionService:
         to avoid importing planner at module load time (keeps runner.py
         import-light).
 
-        Mode resolution (P1): an explicit ``spec.planning_policy`` takes
-        priority; otherwise fall back to P0's legacy ``use_planner`` flag.
-        ``PlanningMode.FAST`` skips the planner entirely.
+        Routing (single-model simplification): the deterministic
+        ``PlanningPolicy.should_plan`` heuristic decides per turn whether the
+        task warrants a plan. The planner always reuses the execution model.
         """
-        from erza.agent.planning_policy import PlanningMode
+        from erza.agent.planning_policy import PlanningPolicy
 
-        if getattr(spec, "planning_policy", None) is not None:
-            policy_mode = spec.planning_policy.mode
-            planner_model = spec.planning_policy.planner_model or spec.model
-            max_replans = spec.planning_policy.planner_max_replans
-            if policy_mode != PlanningMode.MANAGED:
-                return None, None, None, None
-        elif not getattr(spec, "use_planner", False):
+        policy = getattr(spec, "planning_policy", None) or PlanningPolicy()
+        task_text = extract_task_from_messages(spec.initial_messages)
+        if not policy.should_plan(task_text):
             return None, None, None, None
-        else:
-            planner_model = getattr(spec, "planner_model", None) or spec.model
-            max_replans = getattr(spec, "planner_max_replans", 3)
 
         from erza.agent.planner import Planner as _Planner
         from erza.agent.planner import PlannerStatus as _PlannerStatus
 
-        planner = _Planner(self._runner.provider, planner_model)
-        task_text = extract_task_from_messages(spec.initial_messages)
+        planner = _Planner(self._runner.provider, spec.model)
         tools_summary = self._runner.build_tools_summary(spec.tools)
         try:
             result = await planner.create_plan(
@@ -148,7 +140,7 @@ class PlanningReflectionService:
                 )
                 return None, None, task_text, tools_summary
             plan = result.plan
-            plan.max_replans = max_replans
+            plan.max_replans = policy.planner_max_replans
             logger.info(
                 "Planner produced {} steps for: {}",
                 len(plan.steps),

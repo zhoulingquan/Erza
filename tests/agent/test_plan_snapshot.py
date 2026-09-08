@@ -17,7 +17,7 @@ import pytest
 
 from erza.agent.plan_snapshot import PlanSnapshot
 from erza.agent.planner import Plan, PlanStep, StepStatus
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.runner import AgentRunner, AgentRunSpec
 from erza.providers.base import LLMProvider, LLMResponse
 
@@ -197,7 +197,7 @@ async def test_runner_emits_plan_snapshots_via_checkpoint_callback() -> None:
             model="test-model",
             max_iterations=6,
             max_tool_result_chars=1000,
-            planning_policy=PlanningPolicy(mode=PlanningMode.MANAGED),
+            planning_policy=PlanningPolicy(force_plan=True),
             checkpoint_callback=capture_checkpoint,
         )
     )

@@ -1,5 +1,7 @@
 """Integration test: verify execution-policy configuration propagates from Config
-through AgentLoopBuilder to AgentLoop and TurnBudget."""
+through AgentLoopBuilder to AgentLoop and TurnBudget (single-model design: no
+usePlanner / plannerModel / tiered budget fields).
+"""
 
 from __future__ import annotations
 
@@ -18,8 +20,6 @@ def _make_config(tmp_path) -> Config:
         {
             "agents": {
                 "defaults": {
-                    "usePlanner": True,
-                    "plannerModel": "planner-model",
                     "plannerMaxReplans": 2,
                     "enableReflection": True,
                     "reflectionInterval": 3,
@@ -64,7 +64,7 @@ class FakeProvider:
 
 
 class TestExecutionPolicyConfigPropagation:
-    """Verify that all seven execution-policy fields flow from Config → Builder → Loop → Budget."""
+    """Verify that execution-policy fields flow from Config → Builder → Loop → Budget."""
 
     @pytest.mark.asyncio
     async def test_from_config_passes_all_fields_to_loop_and_budget(self, tmp_path) -> None:
@@ -73,10 +73,9 @@ class TestExecutionPolicyConfigPropagation:
 
         loop = AgentLoop.from_config(config, provider=provider)
 
-        # All seven fields must be set on the loop
-        assert loop.use_planner is True
-        assert loop.planner_model == "planner-model"
-        assert loop.planner_max_replans == 2
+        # Planner/reflection/budget fields must be set on the loop
+        assert loop.planning_policy is not None
+        assert loop.planning_policy.planner_max_replans == 2
         assert loop.enable_reflection is True
         assert loop.reflection_interval == 3
         assert loop._max_input_tokens_per_turn == 1234
@@ -119,10 +118,9 @@ class TestExecutionPolicyConfigPropagation:
         )
 
         assert captured_spec is not None
-        # Assert the five planner/reflection fields and attached budget in the spec
-        assert captured_spec.use_planner is True
-        assert captured_spec.planner_model == "planner-model"
-        assert captured_spec.planner_max_replans == 2
+        # Assert the planner/reflection fields and attached budget in the spec
+        assert captured_spec.planning_policy is not None
+        assert captured_spec.planning_policy.planner_max_replans == 2
         assert captured_spec.enable_reflection is True
         assert captured_spec.reflection_interval == 3
         assert captured_spec.turn_budget is not None
@@ -131,13 +129,11 @@ class TestExecutionPolicyConfigPropagation:
 
     @pytest.mark.asyncio
     async def test_defaults_when_not_set_in_config(self) -> None:
-        """When config omits fields, AgentDefaults values are used (False/None/3)."""
+        """When config omits fields, AgentDefaults values are used."""
         config = Config.model_validate(
             {
                 "agents": {
                     "defaults": {
-                        "usePlanner": False,
-                        "plannerModel": None,
                         "plannerMaxReplans": 3,
                         "enableReflection": False,
                         "reflectionInterval": 5,
@@ -152,17 +148,16 @@ class TestExecutionPolicyConfigPropagation:
 
         loop = AgentLoop.from_config(config)
 
-        assert loop.use_planner is False
-        assert loop.planner_model is None
-        assert loop.planner_max_replans == 3
+        assert loop.planning_policy is not None
+        assert loop.planning_policy.planner_max_replans == 3
         assert loop.enable_reflection is False
         assert loop.reflection_interval == 5
         assert loop._max_input_tokens_per_turn is None
         assert loop._max_cost_per_turn_usd is None
 
         budget = loop._build_turn_budget()
-        # P2-T3: explicit fields unset → FAST tiered defaults (80k / $2).
+        # Single-tier defaults (200k / $5).
         assert budget is not None
-        assert budget.max_input_tokens == 80_000
-        assert budget.max_cost_usd == 2.0
+        assert budget.max_input_tokens == 200_000
+        assert budget.max_cost_usd == 5.0
         assert budget.require_cost_tracking is False

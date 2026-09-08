@@ -11,7 +11,7 @@ import pytest
 
 from erza.agent import turn_telemetry
 from erza.agent.planner import Plan, PlanStep
-from erza.agent.planning_policy import PlanningMode, PlanningPolicy
+from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.runner import AgentRunner, AgentRunSpec
 from erza.agent.safety_policy import RiskLevel
 from erza.agent.turn_telemetry import TurnTelemetry
@@ -168,7 +168,7 @@ async def test_fast_escalation_end_to_end(bound_telemetry: TurnTelemetry) -> Non
         model="test-model",
         max_iterations=50,  # fast tier default
         max_tool_result_chars=1000,
-        planning_policy=PlanningPolicy(mode=PlanningMode.FAST),
+        planning_policy=PlanningPolicy(force_plan=False),
     )
 
     result = await runner.run(spec)
