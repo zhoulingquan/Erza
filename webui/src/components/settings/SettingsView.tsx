@@ -31,7 +31,6 @@ import { SettingsSidebar } from "./components/SettingsSidebar";
 import { SettingsGroup, SettingsRow } from "./components/SettingsRow";
 import { OverviewSettings } from "./sections/OverviewSettings";
 import { AppearanceSettings } from "./sections/AppearanceSettings";
-import { AppsSettings } from "./sections/AppsSettings";
 import { ModelsSettings } from "./sections/ModelsSettings";
 import { ProvidersSettings } from "./sections/ProvidersSettings";
 import { AdvancedSettings } from "./sections/AdvancedSettings";
@@ -170,8 +169,6 @@ export function SettingsView({
             requiresRestartPending={state.pendingRestartSections.runtime}
           />
         );
-      case "apps":
-        return <AppsSettings />;
       default:
         return null;
     }

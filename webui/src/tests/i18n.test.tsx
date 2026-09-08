@@ -27,7 +27,6 @@ const SETTINGS_NAV_KEYS = [
   "overview",
   "appearance",
   "models",
-  "apps",
   "advanced",
 ];
 function isRecord(value: unknown): value is Record<string, unknown> {

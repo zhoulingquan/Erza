@@ -84,24 +84,9 @@ function settingsPayload(): SettingsPayload {
   };
 }
 
-const installedBrowserbase = {
-  name: "browserbase",
-  display_name: "Browserbase",
-  category: "browser",
-  description: "Cloud browser automation for agents",
-  requires: "BROWSERBASE_API_KEY",
-  install_supported: true,
-  installed: true,
-  configured: true,
-  available: true,
-  status: "configured",
-  logo_url: null,
-  brand_color: "#6366F1",
-};
-
 function renderSettingsView(
   options: {
-    initialSection?: "advanced" | "models" | "apps";
+    initialSection?: "advanced" | "models";
     onSettingsChange?: (payload: SettingsPayload) => void;
   } = {},
 ) {
@@ -119,58 +104,9 @@ function renderSettingsView(
   );
 }
 
-describe("SettingsView Apps catalog", () => {
+describe("SettingsView sections", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  it("shows a visible remove button for configured MCP presets and calls remove", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "/api/settings") {
-        return jsonResponse(settingsPayload());
-      }
-      if (url === "/api/settings/mcp-presets") {
-        return jsonResponse({
-          presets: [installedBrowserbase],
-          installed_count: 1,
-        });
-      }
-      if (url === "/api/settings/mcp-presets/remove?name=browserbase") {
-        return jsonResponse({
-          presets: [{ ...installedBrowserbase, installed: false, configured: false, status: "available" }],
-          installed_count: 0,
-          last_action: {
-            ok: true,
-            message: "Removed MCP preset Browserbase.",
-          },
-        });
-      }
-      return { ok: false, status: 404, json: async () => ({}) } as Response;
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderSettingsView({ initialSection: "apps" });
-
-    expect(await screen.findByRole("heading", { name: "Apps" })).toBeInTheDocument();
-    expect(await screen.findByText("Browserbase")).toBeInTheDocument();
-    const remove = screen.getByRole("button", { name: "Remove" });
-
-    fireEvent.click(remove);
-
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/settings/mcp-presets/remove?name=browserbase",
-        expect.objectContaining({
-          headers: { Authorization: "Bearer tok" },
-        }),
-      ),
-    );
-    expect(await screen.findByText("Removed MCP preset Browserbase.")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-
-    expect(screen.queryByText("Removed MCP preset Browserbase.")).not.toBeInTheDocument();
   });
 
   it("publishes the latest settings payload to the shell", async () => {

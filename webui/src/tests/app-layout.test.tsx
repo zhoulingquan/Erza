@@ -15,81 +15,6 @@ let mockSessions: ChatSummary[] = [];
 const HERO_GREETING_PATTERN =
   /What should we work on\?|Where should we start\?|What are we building today\?|What should we tackle together\?/;
 
-function jsonResponse(body: unknown): Response {
-  return {
-    ok: true,
-    status: 200,
-    json: async () => body,
-  } as Response;
-}
-
-function baseSettingsPayload() {
-  return {
-    agent: {
-      model: "deepseek/deepseek-chat",
-      provider: "auto",
-      resolved_provider: "deepseek",
-      has_api_key: true,
-      model_preset: "default",
-      max_tokens: 8192,
-      context_window_tokens: 65536,
-      temperature: 0.1,
-      reasoning_effort: null,
-      tool_hint_max_length: 40,
-      use_planner: false,
-      planner_model: null,
-      planner_max_replans: 3,
-    },
-    model_presets: [{
-      name: "default",
-      label: "Default",
-      active: true,
-      is_default: true,
-      model: "deepseek/deepseek-chat",
-      provider: "auto",
-      max_tokens: 8192,
-      context_window_tokens: 65536,
-      temperature: 0.1,
-      reasoning_effort: null,
-    }],
-    providers: [],
-    web: {
-      enable: true,
-      proxy: null,
-      user_agent: null,
-      fetch: { use_jina_reader: true },
-    },
-    runtime: {
-      config_path: "/tmp/config.json",
-      workspace_path: "/tmp/workspace",
-      gateway_host: "127.0.0.1",
-      gateway_port: 8765,
-      heartbeat: {
-        enabled: true,
-        interval_s: 3600,
-        keep_recent_messages: 8,
-      },
-      dream: {
-        schedule: "cron 0 3 * * *",
-        max_batch_size: 20,
-      },
-      unified_session: false,
-    },
-    advanced: {
-      restrict_to_workspace: false,
-      webui_allow_local_service_access: true,
-      webui_default_access_mode: "default",
-      private_service_protection_enabled: true,
-      ssrf_whitelist_count: 0,
-      mcp_server_count: 0,
-      exec_enabled: true,
-      exec_sandbox: null,
-      exec_path_append_set: false,
-    },
-    requires_restart: false,
-  };
-}
-
 vi.mock("@/hooks/useSessions", async (importOriginal) => {
   const React = await import("react");
   const actual = await importOriginal<typeof import("@/hooks/useSessions")>();
@@ -704,8 +629,8 @@ describe("App layout", () => {
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
     const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
     const searchButton = screen.getByRole("button", { name: "Search chats" });
-    const appsButton = within(sidebar).getByRole("button", { name: "Apps" });
-    expect(searchButton.compareDocumentPosition(appsButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const newChatButton = within(sidebar).getByRole("button", { name: "New chat" });
+    expect(searchButton.compareDocumentPosition(newChatButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(within(sidebar).getByRole("button", { name: "Settings" }));
 
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
@@ -720,7 +645,7 @@ describe("App layout", () => {
     );
     expect(within(settingsNav).getByRole("button", { name: /Models/ })).toBeInTheDocument();
     expect(within(settingsNav).queryByRole("button", { name: "Providers" })).not.toBeInTheDocument();
-    expect(within(settingsNav).getByRole("button", { name: "Apps" })).toBeInTheDocument();
+    expect(within(settingsNav).queryByRole("button", { name: "Apps" })).not.toBeInTheDocument();
     expect(within(settingsNav).getByRole("button", { name: "Security" })).toBeInTheDocument();
     fireEvent.click(within(settingsNav).getByRole("button", { name: "Appearance" }));
     fireEvent.click(within(settingsNav).getByRole("button", { name: "Models" }));
@@ -786,35 +711,6 @@ describe("App layout", () => {
     expect(screen.getByText("Dream")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Search timezone")).not.toBeInTheDocument();
     expect(within(settingsNav).queryByRole("button", { name: "System" })).not.toBeInTheDocument();
-  });
-
-  it("opens Apps from the main sidebar without replacing the sidebar", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const href = String(input);
-        if (href === "/api/settings") {
-          return jsonResponse(baseSettingsPayload());
-        }
-        if (href === "/api/settings/mcp-presets") {
-          return jsonResponse({ presets: [], installed_count: 0 });
-        }
-        return { ok: false, status: 404, json: async () => ({}) } as Response;
-      }),
-    );
-
-    render(<App />);
-
-    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
-    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
-    const appsButton = within(sidebar).getByRole("button", { name: "Apps" });
-
-    fireEvent.click(appsButton);
-
-    expect(await screen.findByRole("heading", { name: "Apps" })).toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "Sidebar navigation" })).toBeInTheDocument();
-    expect(screen.queryByRole("navigation", { name: "Settings sections" })).not.toBeInTheDocument();
-    expect(document.title).toBe("Erza");
   });
 
   it("returns from settings to the blank start page when no session was active", async () => {

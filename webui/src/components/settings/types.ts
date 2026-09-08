@@ -5,7 +5,6 @@ import type { Dispatch, SetStateAction } from "react";
 
 import {
   Activity,
-  LayoutGrid,
   Palette,
   ShieldCheck,
   SlidersHorizontal,
@@ -25,8 +24,7 @@ export type SettingsSectionKey =
   | "overview"
   | "appearance"
   | "models"
-  | "advanced"
-  | "apps";
+  | "advanced";
 
 export type LocalDensity = "comfortable" | "compact";
 export type LocalActivityMode = "auto" | "expanded";
@@ -135,7 +133,6 @@ export const SETTINGS_NAV_ITEMS: Array<{
   { key: "appearance", icon: Palette, fallback: "Appearance" },
   { key: "models", icon: SlidersHorizontal, fallback: "Models" },
   { key: "advanced", icon: ShieldCheck, fallback: "Security" },
-  { key: "apps", icon: LayoutGrid, fallback: "Apps" },
 ];
 
 export function readLocalPreferences(): LocalPreferences {

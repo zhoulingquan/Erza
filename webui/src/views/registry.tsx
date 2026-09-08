@@ -9,13 +9,12 @@
 //   - 用 render 函数模式而非 component 字段，因为各 View 的 props 差异较大
 //     （settings 无 token 但有 themeMode/onRestart 等；apps 无 token；agents 有 onUseAgent）
 //   - lazy 组件在模块顶层定义，确保 Suspense 只触发一次懒加载
-//   - showBoundary 控制是否包裹 ErrorBoundary（tools/channels/apps 原本无 ErrorBoundary，保持不变）
+//   - showBoundary 控制是否包裹 ErrorBoundary（tools/channels 原本无 ErrorBoundary，保持不变）
 //   - settings/chat 是特殊视图：chat 不在此注册（需保持挂载不卸载），settings 在此注册但 render 较复杂
 
 import { lazy, type ComponentType, type ReactNode } from "react";
 import {
   CalendarClock,
-  LayoutGrid,
   MessageSquare,
   Package,
   PlugZap,
@@ -35,7 +34,6 @@ const LazyAgentsView = lazy(() => import("@/components/agents/AgentsView").then(
 const LazyCronView = lazy(() => import("@/components/cron/CronView").then(m => ({ default: m.CronView })));
 const LazyToolsView = lazy(() => import("@/components/tools/ToolsView").then(m => ({ default: m.ToolsView })));
 const LazyChannelsView = lazy(() => import("@/components/channels/ChannelsView").then(m => ({ default: m.ChannelsView })));
-const LazyAppsView = lazy(() => import("@/components/apps/AppsView").then(m => ({ default: m.AppsView })));
 
 // 渲染上下文：聚合所有 View 可能需要的 props，由 App.tsx 统一传入
 export interface ViewRenderContext {
@@ -108,14 +106,6 @@ export const VIEW_REGISTRY: ViewRegistration[] = [
     showBoundary: false,      // 保持原有行为：无 ErrorBoundary
     order: 4,
     render: (ctx) => <LazyChannelsView onBack={ctx.onBack} token={ctx.token} />,
-  },
-  {
-    key: "apps",
-    labelKey: "sidebar.apps",
-    icon: LayoutGrid,
-    showBoundary: false,      // 保持原有行为：无 ErrorBoundary
-    order: 5,
-    render: (ctx) => <LazyAppsView onBack={ctx.onBack} />,
   },
   {
     key: "cron",
