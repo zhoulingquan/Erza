@@ -6,6 +6,48 @@
 > 计划**，snapshot origin="escalated"。恢复语义以 HEAD（commit 9cce3385）
 > 的 `runner.py` 为参照，**但删除 PlanningMode 依赖**。
 
+## 0. 勘误 E2（2026-09-08 二次实施裁定；必读）
+
+首次实施按纪律停止：`test_runner_injections.py::test_pending_queue_preserves_overflow_for_next_injection_cycle`
+回归——注入驱动的连续无工具迭代触发升级真调规划器，消耗一次脚本化响应使
+断言错位。裁定前已核实 HEAD 真实机制：**HEAD 的第三门是
+`spec.planning_policy is not None`**（默认配置 policy=None，升级从未默认生效）；
+W11 语义下 policy 恒存在，升级首次面向所有无 plan 的 turn 生效——回归是
+新语义的**真实行为暴露**，不是 D4 对 HEAD 的偏离。同时发现 HEAD 停滞计数
+定义在新架构下不完备：注入系统会在无工具响应后追加新消息继续循环，这类
+"应答新输入"的迭代与"原地停滞"不可区分，需语义补全。
+
+### E2.1 停滞计数语义补全（授权改动）
+
+停滞计数定义修正为：**"无新输入下连续无工具迭代"**。重置点两个：
+
+1. 工具迭代执行（既有 2.5，模型动手了）；
+2. **真实注入到达**（本勘误新增）：`try_drain_injections` 返回
+   `(should_continue, new_cycles)` 且 `new_cycles > 注入前 cycles`（真实用户
+   消息入列，模型是在应答新输入，不构成停滞证据）。
+
+**goal_continue 注入不重置**（它是系统对同一目标的再提示，模型对同一目标
+持续不动手仍是停滞；且 goal 重写生成的目标指令通常已带强信号在 turn 开头
+规划，plan 非 None 时升级门本就关闭）。
+
+实现约束：`try_drain_injections` 签名与行为**不改**；重置逻辑放调用侧
+（`should_continue and new_cycles > old_cycles` 时置
+`state.consecutive_nontool_iterations = 0`）。授权文件集在原 3 个路径之上
+扩展为"`runner.py` 中 `try_drain_injections` 的调用侧计数重置"。
+
+### E2.2 新增测试 S9
+
+`test_injection_resets_stall_counter`：真实注入到达后停滞计数归零——
+注入后连续无工具迭代不触发升级；注入耗尽（达到 `_MAX_INJECTION_CYCLES`
+或队列空）后恢复累积、正常触发升级。`test_runner_injections.py` 既有用例
+（不改）作为回归守卫。
+
+### E2.3 安全性论证（记录）
+
+注入流持续重置 → 升级不触发，但有 `_MAX_INJECTION_CYCLES` 上限兜底：真实
+注入耗尽后计数恢复累积，升级安全网仍然闭环。goal_continue 不重置，/goal
+turn 的停滞升级不受影响。
+
 ## 1. 现状锚点（逐条核对，任何一条不符立即停止报告）
 
 | # | 锚点 | 位置（参考值） |
