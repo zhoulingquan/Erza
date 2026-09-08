@@ -5,6 +5,69 @@
 > LLM 裁决（清单测试），并完成 `init_planner` 从 `should_plan` 到 `classify`
 > 的切换。
 
+## 0. 勘误 E1（2026-09-08 裁定；本批首次实施中止的根因修正，必读）
+
+首次 W11-2 实施按纪律中止（未 commit、已回退）：L2 router 调用放入
+`init_planner` 后，~19 个既有测试文件失败——它们以 MagicMock/脚本化
+FakeProvider + 灰区占位任务文本（"ship"、"drive it" 类）驱动全链路 runner，
+新增的 router 调用破坏了调用计数断言与响应序列。
+
+**根因是任务书缺陷而非实施错误**：已批准流程图 STEP 3 的"单步查看/执行 →
+DIRECT"桶在 01 任务书决策表转写时遗漏，导致短、无产出动词、无结构信号的
+占位 fixture 全部落入 GRAY 触发 router 调用。本节为授权勘误。
+
+### E1.1 决策表补行（授权改动 `erza/agent/planning_policy.py`）
+
+在 01 任务书 3.3 决策表的问句行（序 6）之后、兜底 GRAY（原序 7）之前插入
+新行：
+
+| 序 | 条件 | 结果 |
+|----|------|------|
+| 6.5 | 无产出动词 且 `_effective_length(text) < 24`（到达此行即隐含未命中强信号/宏目标/动词门/寒暄/问句） | DIRECT / `trivial`（signals 记 `effective_len`） |
+
+语义：短且无产出动词且无任何结构信号 = 单一祈使短语（"跑一下测试"、
+"看看这个文件"、"ship"）→ 直接执行，不付 L2 调用。带动词的短任务仍走
+序 4 verb_gate 进灰区（"写个注释"语义保持不变，"短 ≠ 小"原则对产出型
+任务依然成立）。
+
+受影响的 W11-1 测试预期翻转（授权，报告中逐条列出）：
+- T19 "你好，帮我看看今天日程"：GRAY → DIRECT（单一祈使，寒暄仅为前缀）
+- T21 "跑一下测试"：GRAY → DIRECT（与已批准流程图示例卡一致）
+- 其余 GRAY 断言不变（T16 动词门、T20 长调查文本 ≥24 有效字符仍为 GRAY）
+
+### E1.2 既有测试适配授权（A-1）
+
+既有测试若**因 L2 router 调用新增而失败**（调用计数/响应序列断言错位），
+允许按以下优先级适配，每处在报告中列出（文件/用例/方式/意图保持说明）：
+
+1. **首选**：spec 构造处显式加 `planning_policy=PlanningPolicy(force_plan=False)`
+   —— 零文本改动、零 mock 改动，行为回到"不规划"路径（与
+   `test_loop_progress.py` 既有模式一致）；
+2. 若测试语义与 force_plan 冲突（测试本身考察规划行为）：改任务文本为
+   DIRECT 形态（短、无产出动词、无结构信号）；
+3. **禁止**：弱化调用计数断言（如 `assert_not_awaited` → `assert_awaited`）、
+   mock 打洞绕过 router、删除既有用例。
+
+适配范围界定：仅限"因 router 调用新增而失败"的用例；其他原因的失败一律
+停止报告，不得借 A-1 扩权。
+
+### E1.3 本批授权文件集（替代 §2 开头的文件清单）
+
+- `erza/templates/agent/planner_router.md`（新增，内容仍以 2.1 为准逐字落盘）
+- `erza/agent/execution/planning.py`（2.2-2.4 原文不变）
+- `erza/agent/planning_policy.py`（**仅** E1.1 补行 + classify docstring 决策
+  表摘要同步；其余禁改）
+- `tests/agent/test_planning_policy.py`（2.5 确认 + E1.1 预期翻转 + 可新增
+  E1 回归用例：短祈使 → DIRECT、带动词短任务 → GRAY 分流）
+- `tests/agent/test_gray_router.py`（新增，§3 原文不变）
+- A-1 授权的既有测试适配（逐文件逐用例列报告）
+
+### E1.4 验证门执行方式补充
+
+全量 pytest 必须**单进程、默认配置**运行（禁止 `--override-ini timeout`
+等改参）；命令超时给足 ≥ 900000ms。若出现真实挂起（非已知 3 失败），
+停止报告，不得用超时参数或跳过手段绕过。
+
 ## 1. 现状锚点（逐条核对，任何一条不符立即停止报告）
 
 | # | 锚点 | 位置（参考值） |
