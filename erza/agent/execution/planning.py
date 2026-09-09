@@ -69,6 +69,8 @@ def extract_session_context(messages: list[dict[str, Any]]) -> tuple[str | None,
 def parse_router_verdict(content: str) -> bool:
     """True iff the first meaningful line says PLAN. Anything else -> False."""
     head = content.strip()[:200].casefold()
+    if re.search(r"\b(?:no|not|don'?t|skip|without)\s+(?:the\s+)?plan\b", head):
+        return False
     if re.search(r"\bplan\b", head):
         return True
     return False

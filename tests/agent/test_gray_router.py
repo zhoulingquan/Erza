@@ -94,6 +94,16 @@ def test_parse_router_verdict_direct_variants() -> None:
         assert parse_router_verdict(text) is False, text
 
 
+def test_parse_router_verdict_negative_plan_variants() -> None:
+    """R2b: negative patterns containing 'plan' -> False."""
+    for text in (
+        "DIRECT — no plan needed",
+        "don't plan, just do it",
+        "skip the plan",
+    ):
+        assert parse_router_verdict(text) is False, text
+
+
 @pytest.mark.parametrize(
     "text",
     ["", "嗯好的", "Let me think...", "directly", "I am going to do nothing"],

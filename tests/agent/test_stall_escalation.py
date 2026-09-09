@@ -386,6 +386,44 @@ async def test_escalation_failure_degrades_gracefully() -> None:
 
 
 # ---------------------------------------------------------------------------
+# S8b: Escalation failure does NOT retry (at-most-once enforced)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stall_escalation_failure_no_retry() -> None:
+    """S8b: Provider returns non-JSON for the force planner call. After the
+    failed attempt, the 'escalated_this_turn' flag prevents any further
+    planner calls (planner call count stays exactly 1).
+    """
+    planner_n = {"n": 0}
+
+    async def _dispatch(**kwargs: Any) -> LLMResponse:
+        kind = _kind(kwargs.get("messages", []))
+        if kind == "planner":
+            planner_n["n"] += 1
+            return LLMResponse(content="sorry I cannot plan", tool_calls=[], usage={})
+        return LLMResponse(content="no progress...", tool_calls=[], usage={})
+
+    provider = _FakeProvider()
+    provider.chat_with_retry = AsyncMock(side_effect=_dispatch)
+    runner = AgentRunner(provider)
+    spec = _spec(
+        [{"role": "user", "content": "test task"}],
+        planning_policy=PlanningPolicy(),
+        max_iterations=5,
+        keep_looping=True,
+    )
+
+    result, checkpoints = await _run(runner, spec)
+
+    # Exactly 1 planner call: the failed attempt counts, but no retry follows.
+    assert planner_n["n"] == 1
+    assert len(_escalated(checkpoints)) == 0
+    assert result.plan is None
+
+
+# ---------------------------------------------------------------------------
 # S9: A real injection arrival resets the stall counter (E2)
 # ---------------------------------------------------------------------------
 

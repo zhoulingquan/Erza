@@ -620,6 +620,7 @@ class AgentRunner:
         if not (stalled or drifting):
             return planner, plan, planner_task_text, planner_tools_summary
         trigger = "drift" if (drifting and not stalled) else "stall"
+        state.escalated_this_turn = True
 
         try:
             planner, new_plan, planner_task_text, planner_tools_summary = await self.init_planner(
@@ -633,7 +634,6 @@ class AgentRunner:
                 from erza.agent.progress_policy import ProgressPolicy, ProgressTracker
 
                 state.progress_tracker = ProgressTracker(ProgressPolicy())
-                state.escalated_this_turn = True
                 state.consecutive_nontool_iterations = 0
                 state.receipt_tool_calls = 0
                 logger.info(
