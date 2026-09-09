@@ -11,6 +11,8 @@ docs/erza-architecture-analysis/
 # Claude / AI assistant artifacts
 docs/superpowers/
 docs/plans/
+.opencode-fix-prompt.md
+opencode.json
 
 # webui (monorepo frontend)
 node_modules/
