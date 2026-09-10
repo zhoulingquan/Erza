@@ -145,6 +145,22 @@ describe("App layout", () => {
         status: 404,
       }),
     );
+    // App 渲染期读取视口宽窄(< lg 时侧边栏常驻为 56px 图标栏)。
+    // 测试默认宽屏:宿主侧边栏完整渲染,与旧布局行为等价;
+    // 手机模式用例在测试体内自行 stub 为窄屏覆盖。
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes("min-width"),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
   });
 
   afterEach(() => {
@@ -160,10 +176,10 @@ describe("App layout", () => {
     expect(main).toBeInTheDocument();
     expect(main).not.toHaveAttribute("style");
 
-    const asideClassNames = Array.from(container.querySelectorAll("aside")).map(
-      (el) => el.className,
-    );
-    expect(asideClassNames.some((cls) => cls.includes("lg:block"))).toBe(true);
+    // 侧边栏常驻渲染(窄视口收缩为图标栏),不参与 main 宽度契约
+    const hostAside = container.querySelector("aside") as HTMLElement;
+    expect(hostAside.classList.contains("shrink-0")).toBe(true);
+    expect(hostAside.classList.contains("hidden")).toBe(false);
   });
 
   it("switches to the next session when deleting the active chat", async () => {
@@ -988,7 +1004,7 @@ describe("App layout", () => {
     expect(toggleThemeSpy).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
-    const sidebarAside = container.querySelector("aside.lg\\:block") as HTMLElement;
+    const sidebarAside = container.querySelector("aside") as HTMLElement;
     await waitFor(() => expect(sidebarAside.style.width).toBe("56px"));
 
     expect(screen.queryByRole("button", { name: "Start a new chat" })).not.toBeInTheDocument();

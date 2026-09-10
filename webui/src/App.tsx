@@ -515,6 +515,19 @@ function Shell({
   const [hostSidebarOpen, setHostSidebarOpen] =
     useState<boolean>(readSidebarOpen);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  /* 视口 < lg(1024px) 时侧边栏常驻为图标栏(rail),不再彻底隐藏;
+   * 完整列表仍通过抽屉(Sheet)访问。 */
+  const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
+    typeof window !== "undefined"
+      ? !window.matchMedia("(min-width: 1024px)").matches
+      : false,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = (e: MediaQueryListEvent) => setIsNarrowViewport(!e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
   const [settingsSnapshot, setSettingsSnapshot] = useState<SettingsPayload | null>(null);
   /** Currently selected subagent id (routes outbound turns to that agent). */
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -955,7 +968,9 @@ function Shell({
             providers={settingsSnapshot?.providers}
             currentProvider={currentProvider}
             onSelectProvider={handleSelectProvider}
-            sidebarWidth={SIDEBAR_WIDTH}
+            sidebarWidth={
+              isNarrowViewport ? SIDEBAR_RAIL_WIDTH : SIDEBAR_WIDTH
+            }
             version={version}
           />
         )}
@@ -964,15 +979,20 @@ function Shell({
             "relative flex min-h-0 flex-1 w-full overflow-hidden",
           )}
         >
-          {/* Host sidebar: in normal flow, so the thread area width stays honest. */}
+          {/* Host sidebar: in normal flow, so the thread area width stays honest.
+           * 窄视口(< lg)不再 hidden,而是常驻 56px 图标栏;完整会话列表走 Sheet 抽屉。 */}
           {showMainSidebar ? (
             <aside
               className={cn(
-                "relative z-20 hidden shrink-0 overflow-hidden lg:block",
+                "relative z-20 shrink-0 overflow-hidden",
                 "transition-[width] duration-300 ease-out",
               )}
               style={{
-                width: hostSidebarOpen ? SIDEBAR_WIDTH : SIDEBAR_RAIL_WIDTH,
+                width: isNarrowViewport
+                  ? SIDEBAR_RAIL_WIDTH
+                  : hostSidebarOpen
+                    ? SIDEBAR_WIDTH
+                    : SIDEBAR_RAIL_WIDTH,
               }}
             >
               <div
@@ -983,10 +1003,12 @@ function Shell({
               >
                 <Sidebar
                   {...sidebarProps}
-                  collapsed={!hostSidebarOpen}
+                  collapsed={isNarrowViewport ? true : !hostSidebarOpen}
                   hostChromeInset={showHostChrome}
                   onCollapse={closeHostSidebar}
-                  onExpand={openHostSidebar}
+                  onExpand={
+                    isNarrowViewport ? undefined : openHostSidebar
+                  }
                 />
               </div>
             </aside>
