@@ -124,6 +124,17 @@ def active_record(**overrides):
     return MemoryRecord.model_validate(record_data(**overrides))
 
 
+def render_hits_only(recall, result):
+    """render_prompt output without the C1 maintenance tail.
+
+    ``tokens_used`` accounts only the rendered hits; the governance note is
+    appended after budgeting and does not participate in the hit accounting.
+    """
+    prompt = recall.render_prompt(result)
+    marker = "\n\n# Memory Maintenance Required\n"
+    return prompt.split(marker, 1)[0] if marker in prompt else prompt
+
+
 @pytest.fixture
 def workspace(tmp_path):
     structured = tmp_path / "memory" / "structured"
@@ -477,7 +488,7 @@ def test_oversized_first_hit_skipped_by_budget(recall, repository):
     assert result.excluded_by_budget >= 1
     assert all(hit.record.id != big.id for hit in result.hits)
     assert any(hit.record.id == small.id for hit in result.hits)
-    assert result.tokens_used == len(_tokenizer().encode(recall.render_prompt(result)))
+    assert result.tokens_used == len(_tokenizer().encode(render_hits_only(recall, result)))
     assert result.tokens_used <= 256
 
 
@@ -495,7 +506,7 @@ def test_budget_accounts_for_prompt_header_and_separators(recall, repository):
     seed(repository, records)
 
     result = recall.recall(make_query(text="architecture.memory", token_budget=256))
-    rendered_tokens = len(_tokenizer().encode(recall.render_prompt(result)))
+    rendered_tokens = len(_tokenizer().encode(render_hits_only(recall, result)))
 
     assert result.tokens_used == rendered_tokens
     assert rendered_tokens <= 256
@@ -926,3 +937,53 @@ def test_recall_candidates_query_plan_uses_partial_index(repository):
     details = [row[3] for row in rows]
     assert any("ix_memory_recall_scope" in detail for detail in details)
     assert not any(detail.startswith("SCAN memory_revisions") for detail in details)
+
+# ---------------------------------------------------------------------------
+# Plan C1: budget-saturated recall injects the maintenance governance note.
+# ---------------------------------------------------------------------------
+
+
+def test_render_prompt_includes_maintenance_note_when_budget_saturated(recall, repository):
+    """excluded_by_budget > 0 → render_prompt carries the governance note
+    pointing at /memory-* commands (never a direct file-edit path)."""
+    long_statement = "中文设计" * 120
+    big = active_record(
+        statement=long_statement,
+        kind="fact",
+        slot="db.big",
+        tags=("architecture.memory",),
+        source_level="confirmed_decision",
+        importance=5,
+    )
+    small = active_record(
+        statement="Short fact.",
+        kind="fact",
+        slot="db.small",
+        tags=("architecture.memory",),
+        source_level="inferred",
+        importance=1,
+    )
+    seed(repository, [big, small])
+
+    result = recall.recall(make_query(token_budget=256))
+    assert result.excluded_by_budget > 0
+
+    prompt = recall.render_prompt(result)
+    assert "# Memory Maintenance Required" in prompt
+    assert f"{result.excluded_by_budget} active records were excluded" in prompt
+    # 治理指令必须指向 /memory-* 命令，绝不提供直写记忆文件路径。
+    assert "/memory-status" in prompt
+    assert "/memory-correct" in prompt
+    assert "/memory-revoke" in prompt
+    assert "Never edit memory/structured/ files directly" in prompt
+    # 维护段位于命中列表之后。
+    assert prompt.find("# Recalled Memory (Deterministic)") < prompt.find(
+        "# Memory Maintenance Required"
+    )
+
+
+def test_render_prompt_omits_maintenance_note_when_no_exclusions(recall, project_decision):
+    """excluded_by_budget == 0 → no maintenance note in render_prompt."""
+    result = recall.recall(make_query(explicit_tags=("architecture.memory",)))
+    assert result.excluded_by_budget == 0
+    assert "Memory Maintenance Required" not in recall.render_prompt(result)

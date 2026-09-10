@@ -38,6 +38,7 @@ def _make_loop():
             # default); without it AgentLoop fail-louds on machines whose
             # learning table lacks "test-model".
             context_window_tokens=65_536,
+            enable_reflection=False,
         )
     return loop, bus
 

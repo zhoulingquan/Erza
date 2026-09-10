@@ -14,6 +14,9 @@ def test_structured_memory_defaults_no_mode() -> None:
     assert not hasattr(config, "mode")
     assert config.recall_token_budget == 2500
     assert config.max_recall_hits == 20
+    assert config.resident_profile_enabled is True
+    assert config.resident_profile_token_budget == 500
+    assert config.resident_min_importance == 4
 
 
 @pytest.mark.parametrize("field", ["embeddingModel", "vectorStore", "vectorSearch"])
@@ -56,6 +59,9 @@ def test_structured_memory_camel_case_alias_without_mode() -> None:
             "minRepeatedEvidence": 3,
             "candidateTtlDays": 14,
             "recallAuditEnabled": True,
+            "residentProfileEnabled": False,
+            "residentProfileTokenBudget": 1000,
+            "residentMinImportance": 3,
         }
     )
 
@@ -66,9 +72,13 @@ def test_structured_memory_camel_case_alias_without_mode() -> None:
     assert config.min_repeated_evidence == 3
     assert config.candidate_ttl_days == 14
     assert config.recall_audit_enabled is True
+    assert config.resident_profile_enabled is False
+    assert config.resident_profile_token_budget == 1000
+    assert config.resident_min_importance == 3
     dumped = config.model_dump(by_alias=True)
     assert dumped["recallTokenBudget"] == 1000
     assert dumped["autoPromoteVerified"] is False
+    assert dumped["residentProfileEnabled"] is False
 
 
 def test_structured_memory_rejects_unknown_field() -> None:

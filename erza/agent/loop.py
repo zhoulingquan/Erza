@@ -166,7 +166,7 @@ class AgentLoopConfig:
     # Deterministic planning router. Decides per turn whether the task
     # warrants a plan (Planner reuses the execution model).
     planning_policy: PlanningPolicy | None = None
-    enable_reflection: bool = False
+    enable_reflection: bool = True
     reflection_interval: int = 5
     max_input_tokens_per_turn: int | None = None
     max_cost_per_turn_usd: float | None = None

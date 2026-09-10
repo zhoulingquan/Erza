@@ -400,7 +400,9 @@ async def test_loop_injected_followup_preserves_image_media(tmp_path):
         return LLMResponse(content="second answer", tool_calls=[], usage={})
 
     provider.chat_with_retry = chat_with_retry
-    loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    loop = AgentLoop(
+        bus=bus, provider=provider, workspace=tmp_path, model="test-model", enable_reflection=False
+    )
     loop.tools.get_definitions = MagicMock(return_value=[])
 
     pending_queue = asyncio.Queue()
@@ -684,7 +686,9 @@ async def test_pending_queue_preserves_overflow_for_next_injection_cycle(tmp_pat
         return LLMResponse(content=f"answer-{call_count['n']}", tool_calls=[], usage={})
 
     provider.chat_with_retry = chat_with_retry
-    loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    loop = AgentLoop(
+        bus=bus, provider=provider, workspace=tmp_path, model="test-model", enable_reflection=False
+    )
     loop.tools.get_definitions = MagicMock(return_value=[])
 
     pending_queue = asyncio.Queue()

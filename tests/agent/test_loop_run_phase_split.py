@@ -226,7 +226,13 @@ async def test_run_agent_loop_smoke_with_pending_queue(tmp_path) -> None:
         return LLMResponse(content="second answer", tool_calls=[], usage={})
 
     provider.chat_with_retry = chat_with_retry
-    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+        enable_reflection=False,
+    )
     loop.tools.get_definitions = MagicMock(return_value=[])
 
     pending_queue: asyncio.Queue = asyncio.Queue()

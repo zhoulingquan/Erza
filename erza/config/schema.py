@@ -166,6 +166,14 @@ class StructuredMemoryConfig(Base):
     candidate_ttl_days: int = Field(default=30, ge=1, le=365)
     recall_audit_enabled: bool = False
 
+    # Always-on resident user profile block (preference-class memory). Rendered
+    # deterministically into the user-message tail (NOT the frozen system
+    # prefix) to cover lexical-recall blind spots for high-confidence USER
+    # records.
+    resident_profile_enabled: bool = True
+    resident_profile_token_budget: int = Field(default=500, ge=100, le=2000)
+    resident_min_importance: int = Field(default=4, ge=1, le=5)
+
 
 class AgentDefaults(Base):
     """Default agent configuration."""
@@ -260,7 +268,7 @@ class AgentDefaults(Base):
         serialization_alias="plannerMaxReplans",
     )  # Max replan attempts on step failure (planning router decides per turn)
     enable_reflection: bool = Field(
-        default=False,
+        default=True,   # 原 False：零延迟捕获，发现当场进 reflections.jsonl 队列
         validation_alias=AliasChoices("enableReflection"),
         serialization_alias="enableReflection",
     )  # Enable post-turn reflection for cross-turn learning

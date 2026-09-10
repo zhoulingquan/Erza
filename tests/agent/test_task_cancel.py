@@ -270,6 +270,15 @@ class TestSubagentCancellation:
             bus=bus,
             max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
         )
+        # A-1 ripple: reflection now defaults on and its terminal LLM call would
+        # overwrite the captured tool-turn messages. Keep the legacy behavior.
+        _orig_runner_run = mgr.runner.run
+
+        async def _runner_run_no_reflection(spec, *args, **kwargs):
+            spec.enable_reflection = False
+            return await _orig_runner_run(spec, *args, **kwargs)
+
+        mgr.runner.run = _runner_run_no_reflection
 
         async def fake_execute(self, **kwargs):
             return "tool result"

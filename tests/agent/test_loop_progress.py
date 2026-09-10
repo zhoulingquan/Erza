@@ -22,7 +22,7 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
     bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
-    return AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    return AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model", enable_reflection=False)
 
 
 class TestToolEventProgress:
@@ -251,7 +251,8 @@ class TestToolEventProgress:
             workspace=tmp_path,
             model="test-model",
             planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
-        )
+        
+            enable_reflection=False)
 
         tool_call = ToolCallRequest(id="tc1", name="exec", arguments={"command": "ls"})
         calls = iter(
@@ -306,7 +307,7 @@ class TestToolEventProgress:
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model", enable_reflection=False)
         edit_events = [
             {
                 "call_id": "call-write",
@@ -398,7 +399,7 @@ class TestToolEventProgress:
 
         provider.chat_stream_with_retry = chat_stream_with_retry
         provider.chat_with_retry = AsyncMock()
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model", planning_policy=PlanningPolicy(force_plan=False))
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model", planning_policy=PlanningPolicy(force_plan=False), enable_reflection=False)
         loop.tools.get_definitions = MagicMock(
             return_value=[
                 {"type": "function", "function": {"name": "write_file"}},
@@ -461,7 +462,8 @@ class TestToolEventProgress:
             workspace=tmp_path,
             model="openai-codex/gpt-5.5",
             planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
-        )
+        
+            enable_reflection=False)
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
@@ -508,7 +510,8 @@ class TestToolEventProgress:
             workspace=tmp_path,
             model="openai-codex/gpt-5.5",
             planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
-        )
+        
+            enable_reflection=False)
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
@@ -608,7 +611,7 @@ class TestToolEventProgress:
         provider.chat_with_retry = AsyncMock(
             return_value=LLMResponse(content="Done", tool_calls=[])
         )
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model", enable_reflection=False)
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
@@ -660,7 +663,8 @@ class TestToolEventProgress:
             workspace=tmp_path,
             model="test-model",
             planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
-        )
+        
+            enable_reflection=False)
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
@@ -715,7 +719,7 @@ class TestToolEventProgress:
         provider.chat_with_retry = AsyncMock(
             return_value=LLMResponse(content="Done", tool_calls=[])
         )
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model", enable_reflection=False)
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
@@ -771,7 +775,7 @@ class TestToolEventProgress:
         provider.chat_with_retry = AsyncMock(
             return_value=LLMResponse(content="Done", tool_calls=[])
         )
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model", enable_reflection=False)
 
         async def fake_title_after_turn(**_kwargs: object) -> bool:
             raise AssertionError("command-only turns should not generate titles")
@@ -805,7 +809,7 @@ class TestToolEventProgress:
         provider.chat_with_retry = AsyncMock(
             return_value=LLMResponse(content="Done", tool_calls=[])
         )
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model", enable_reflection=False)
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
 

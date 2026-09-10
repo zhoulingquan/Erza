@@ -181,6 +181,26 @@ class StructuredMemoryRecall:
                 f"- [{hit.record.id} | {hit.record.kind.value} | {hit.record.scope.kind.value}] {hit.record.statement}"
             )
             lines.append(f"  Why: {', '.join(hit.reasons)}, total={hit.score}")
+        if result.excluded_by_budget > 0:
+            # Governance note appended after the hit list, inside the same
+            # prompt section (deterministic copy, no model involved). Point the
+            # model at the /memory-* commands — Erza never allows direct edits
+            # of memory/structured/ files. Degraded results never reach here
+            # (they carry no hits and return "" above).
+            lines.extend(
+                [
+                    "",
+                    "# Memory Maintenance Required",
+                    "",
+                    (
+                        f"The recall token budget is saturated: {result.excluded_by_budget} "
+                        "active records were excluded from injection. Before continuing the "
+                        "user's task, check /memory-status and use /memory-correct to merge "
+                        "duplicates or /memory-revoke to retire stale high-importance records. "
+                        "Never edit memory/structured/ files directly."
+                    ),
+                ]
+            )
         return "\n".join(lines)
 
     # ------------------------------------------------------------------

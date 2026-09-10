@@ -17,7 +17,7 @@ from erza.agent.subagent_registry import SubagentDefinition
 from erza.bus.events import InboundMessage
 from erza.config.schema import StructuredMemoryConfig
 from erza.memory import MemoryStore, WorkspaceMemoryRegistry
-from erza.memory.models import MemoryScope, RecallQuery, ScopeKind
+from erza.memory.models import MemoryScope, RecallQuery, ScopeKind, SourceLevel
 from erza.session.goal_state import goal_state_runtime_lines
 from erza.tools import mcp as mcp_tools
 from erza.tools.registry import ToolRegistry
@@ -185,6 +185,67 @@ class ContextBuilder:
             return self._recall_degraded_diagnostic(result.error_code)
         return recall.render_prompt(result)
 
+    def _resident_profile_section(
+        self,
+        *,
+        user_key: str | None = None,
+        store: MemoryStore | None = None,
+    ) -> str:
+        """Render the always-on user profile block (preference-class memory).
+
+        Covers lexical-recall blind spots for high-confidence USER-scope
+        records (user-stated rules/preferences/verified facts) that a keyword
+        query may miss. This is an enhancement, not a critical path: it is
+        silently skipped when disabled or degraded — no downgrade diagnostics
+        are injected.
+
+        Rendering is deterministic: candidates filtered by importance and
+        source confidence, sorted by (importance desc, updated_at desc, id),
+        and capped with ``resident_profile_token_budget`` (whole lines only,
+        never a truncated half-line).
+        """
+        store = store or self.memory
+        cfg = store.structured_config
+        repository = store.structured_repository
+        if not cfg.resident_profile_enabled or repository.health.state != "healthy":
+            return ""
+        candidates = repository.recall_candidates(
+            allowed_scopes=(
+                MemoryScope(kind=ScopeKind.USER, key=user_key or "user:default"),
+            ),
+            requested_kinds=(),
+            now=datetime.now(timezone.utc),
+        )
+        allowed_sources = {
+            SourceLevel.EXPLICIT_CORRECTION,
+            SourceLevel.CONFIRMED_DECISION,
+            SourceLevel.VERIFIED,
+        }
+        selected = [
+            record
+            for record in candidates
+            if record.importance >= cfg.resident_min_importance
+            and record.source_level in allowed_sources
+        ]
+        if not selected:
+            return ""
+        selected.sort(
+            key=lambda record: (-record.importance, -record.updated_at.timestamp(), record.id)
+        )
+        budget = cfg.resident_profile_token_budget
+        lines = ["# User Profile (Always-On)", ""]
+        used = self._estimate_tokens("\n".join(lines))
+        for record in selected:
+            entry = f"- [{record.id}] {record.statement}"
+            prospective = used + self._estimate_tokens(entry)
+            if prospective > budget:
+                break
+            lines.append(entry)
+            used = prospective
+        if len(lines) <= 2:
+            return ""
+        return "\n".join(lines)
+
     @staticmethod
     def _recall_degraded_diagnostic(error_code: str | None) -> str:
         code = re.sub(r"[^a-zA-Z0-9_.-]", "_", error_code or "unknown")[:80]
@@ -271,6 +332,13 @@ class ContextBuilder:
         if policy and policy.strip():
             if self._estimate_tokens(policy) > self._MAX_INJECTION_TOKENS:
                 logger.warning("shared policy exceeds injection budget; not truncated")
+                policy = (
+                    "ACTION REQUIRED: This shared policy exceeds the injection budget. "
+                    "Before executing the task, propose trimming POLICY.md to the user "
+                    "(keep normative rules only, move facts to governed memory via "
+                    "/memory-correct). Never edit the file without user confirmation.\n\n"
+                    + policy
+                )
             parts.append((self._PRIORITY_CRITICAL, f"# Shared Policy (Cross-Session)\n\n{policy}"))
 
         always_skills = self.skills.get_always_skills()
@@ -531,6 +599,15 @@ class ContextBuilder:
         # Subagent resume turns skip them along with the runtime context.
         dynamic_blocks: list[str] = []
         if not skip_runtime_lines:
+            # Always-on user profile goes first (preference-class memory has
+            # the highest priority) and is skipped in light/heartbeat turns,
+            # same as structured recall.
+            if not light_context:
+                resident = self._resident_profile_section(
+                    user_key=recall_user_key, store=store
+                )
+                if resident:
+                    dynamic_blocks.append(resident)
             if recall_query and not light_context:
                 recall_text = self._recall_section(
                     truncate_text(recall_query, 2000),

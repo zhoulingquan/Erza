@@ -18,6 +18,21 @@ always: true
 
 Only active records returned by deterministic exact-scope recall enter context. Candidates never enter context. Refer to records by their stable `mem_...` IDs and use `/memory-show`, `/memory-promote`, `/memory-revoke`, or `/memory-correct` for management. `/memory-correct` requires non-empty subject, slot and statement fields.
 
+## Retrieval Routing
+
+Decide where to look before searching:
+
+1. **Structured memory** — already injected when relevant (deterministic recall
+   + always-on user profile). If a needed fact might be governed but was not
+   injected, do not grep; the recall is deterministic — ask the user or use
+   /memory-show.
+2. **This project's past events** — search `memory/history.jsonl` with grep
+   (see "Search Past Events" below). Use targeted patterns; avoid full-file reads.
+3. **No dependency** — if the task has no plausible link to past events
+   (fresh work, pure Q&A), skip history search entirely.
+
+Cost rule: history search is the fallback, never the first move.
+
 ## Search Past Events
 
 `memory/history.jsonl` is JSONL format — each line is a JSON object with `cursor`, `timestamp`, `content`.
@@ -39,3 +54,6 @@ Examples (replace `keyword`):
 - **Do NOT edit any file under `memory/structured/`.** Use the memory commands for governed records.
 - Correct outdated facts explicitly with `/memory-correct`; Dream only proposes facts from history and reflections.
 - If `/memory-status` is degraded, do not infer missing facts or edit the database. Report the diagnostic and use backup/memory Git history for recovery.
+- Reflections you see referenced in /memory-status come from the automated
+  reflection queue; they are evidence for Dream, not facts. Do not treat
+  unconsumed reflections as established rules.

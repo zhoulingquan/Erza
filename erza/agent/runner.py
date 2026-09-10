@@ -119,8 +119,8 @@ class AgentRunSpec:
     planning_policy: PlanningPolicy | None = None
     # Reflection: when enabled, produce a "lesson learned" on failure or every
     # reflection_interval iterations, appended to memory/reflections.jsonl for
-    # Dream to consolidate. Default False = no reflection overhead.
-    enable_reflection: bool = False
+    # Dream to consolidate. Default True = zero-latency capture by default.
+    enable_reflection: bool = True
     reflection_interval: int = 5  # periodic reflection every N iterations
     # Governed user identity for this run (e.g. "user:alice"). Forwarded to
     # reflections so Dream can partition evidence by the exact identity tuple.

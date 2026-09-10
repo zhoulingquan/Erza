@@ -47,6 +47,7 @@ async def test_runner_persists_large_tool_results_for_follow_up_calls(tmp_path):
             workspace=tmp_path,
             session_key="test:runner",
             max_tool_result_chars=2048,
+            enable_reflection=False,
         )
     )
 

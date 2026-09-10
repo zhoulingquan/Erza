@@ -28,7 +28,7 @@ def _make_loop(tmp_path):
         patch("erza.agent.loop.SubagentManager") as MockSubMgr,
     ):
         MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, enable_reflection=False)
     return loop
 
 
@@ -258,6 +258,7 @@ async def test_next_turn_after_llm_error_keeps_turn_boundary(tmp_path):
         workspace=tmp_path,
         model="test-model",
         planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
+        enable_reflection=False,
     )
     loop.tools.get_definitions = MagicMock(return_value=[])
     loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]

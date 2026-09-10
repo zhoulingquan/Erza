@@ -342,6 +342,7 @@ async def test_backfill_repairs_model_context_without_shifting_save_turn_boundar
         provider=provider,
         workspace=tmp_path,
         model="test-model",
+        enable_reflection=False,
     )
     loop.tools.get_definitions = MagicMock(return_value=[])
     loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]

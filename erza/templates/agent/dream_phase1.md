@@ -43,3 +43,10 @@ Rules:
   "inferred" otherwise.
 - If nothing is worth keeping, return the legal empty batch exactly:
   {"schema_version": 1, "proposals": []} — never free text like "nothing new".
+- When a proposal originates from a failure or correction (reflection triggers
+  such as tool_error, or a user-reported incident), anchor the rule: include a
+  one-line incident note in "detail" (date + concrete event, e.g.
+  "anchored: 2026-09-10 fire-and-forget background task lost, stale data
+  nearly shipped"). Rules with incident anchors are followed more reliably
+  than bare rules. Never fabricate an incident; only anchor to evidence you
+  actually saw in the prompt.

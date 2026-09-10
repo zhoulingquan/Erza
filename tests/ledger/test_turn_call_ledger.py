@@ -116,6 +116,7 @@ class TestTurnCallLedger:
             workspace=tmp_path,
             model="test-model",
             planning_policy=PlanningPolicy(force_plan=True),
+            enable_reflection=False,
         )
         loop.tools.get_definitions = MagicMock(
             return_value=[
@@ -190,6 +191,7 @@ class TestTurnCallLedger:
             model="test-model",
             planning_policy=PlanningPolicy(force_plan=True),
             max_cost_per_turn_usd=0.03,
+            enable_reflection=False,
         )
         loop.tools.get_definitions = MagicMock(
             return_value=[

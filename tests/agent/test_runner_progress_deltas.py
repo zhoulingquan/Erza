@@ -150,6 +150,7 @@ async def test_runner_streams_live_write_file_activity_from_tool_argument_deltas
             progress_callback=progress_cb,
             workspace=tmp_path,
             planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
+            enable_reflection=False,
         )
     )
 
@@ -246,6 +247,7 @@ async def test_runner_streams_live_edit_file_activity_from_tool_argument_deltas(
             max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
             progress_callback=progress_cb,
             workspace=tmp_path,
+            enable_reflection=False,
         )
     )
 
@@ -307,6 +309,7 @@ async def test_runner_marks_unfinished_live_write_file_activity_failed(tmp_path)
             progress_callback=progress_cb,
             workspace=tmp_path,
             planning_policy=PlanningPolicy(force_plan=False),  # A-1: skip L2 router
+            enable_reflection=False,
         )
     )
 
