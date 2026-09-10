@@ -50,6 +50,7 @@ async def test_chat_with_retry_retries_transient_error_then_succeeds(monkeypatch
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
@@ -96,6 +97,7 @@ async def test_chat_with_retry_returns_final_error_after_retries(monkeypatch) ->
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
@@ -354,6 +356,7 @@ async def test_chat_with_retry_uses_retry_after_and_emits_wait_progress(monkeypa
         progress.append(msg)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(
         messages=[{"role": "user", "content": "hello"}],
@@ -407,11 +410,42 @@ async def test_chat_with_retry_prefers_structured_retry_after_when_present(monke
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
     assert response.content == "ok"
     assert delays == [9.0]
+
+
+def test_apply_jitter_scales_delay_within_bounds(monkeypatch) -> None:
+    monkeypatch.setattr("erza.providers.base.random.uniform", lambda lo, hi: lo)
+    assert LLMProvider._apply_jitter(4.0) == 3.0
+
+    monkeypatch.setattr("erza.providers.base.random.uniform", lambda lo, hi: hi)
+    assert LLMProvider._apply_jitter(4.0) == 5.0
+
+
+@pytest.mark.asyncio
+async def test_chat_with_retry_passes_jittered_delay_to_sleep(monkeypatch) -> None:
+    provider = ScriptedProvider(
+        [
+            LLMResponse(content="429 rate limit", finish_reason="error"),
+            LLMResponse(content="ok"),
+        ]
+    )
+    delays: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("erza.providers.base.random.uniform", lambda lo, hi: hi)
+
+    response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
+
+    assert response.content == "ok"
+    assert delays == [1.25]
 
 
 @pytest.mark.asyncio
@@ -432,6 +466,7 @@ async def test_chat_with_retry_retries_structured_status_code_without_keyword(mo
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
@@ -489,6 +524,7 @@ async def test_chat_with_retry_retries_429_transient_rate_limit(monkeypatch) -> 
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
@@ -515,6 +551,7 @@ async def test_chat_with_retry_retries_structured_timeout_kind(monkeypatch) -> N
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
@@ -566,6 +603,7 @@ async def test_chat_with_retry_prefers_structured_retry_after(monkeypatch) -> No
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
@@ -587,6 +625,7 @@ async def test_persistent_retry_aborts_after_ten_identical_transient_errors(monk
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(
         messages=[{"role": "user", "content": "hello"}],
@@ -669,6 +708,7 @@ async def test_chat_with_retry_retries_zhipu_1302_rate_limit(monkeypatch) -> Non
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
@@ -697,6 +737,7 @@ async def test_chat_with_retry_retries_zhipu_1302_with_429_status(monkeypatch) -
         delays.append(delay)
 
     monkeypatch.setattr("erza.providers.base.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(LLMProvider, "_apply_jitter", staticmethod(lambda d: d))
 
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 

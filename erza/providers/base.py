@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import random
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -774,6 +775,11 @@ class LLMProvider(ABC):
             return response.retry_after
         return cls._extract_retry_after(response.content)
 
+    @staticmethod
+    def _apply_jitter(delay: float) -> float:
+        # ±25% 均匀抖动，打散多会话同时被限速后的同步重试
+        return delay * random.uniform(0.75, 1.25)
+
     async def _sleep_with_heartbeat(
         self,
         delay: float,
@@ -868,6 +874,7 @@ class LLMProvider(ABC):
             delay = self._extract_retry_after_from_response(response) or base_delay
             if persistent:
                 delay = min(delay, self._PERSISTENT_MAX_DELAY)
+            delay = self._apply_jitter(delay)
 
             logger.warning(
                 "LLM transient error (attempt {}{}), retrying in {}s: {}",
