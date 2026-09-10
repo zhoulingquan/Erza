@@ -13,6 +13,7 @@ import {
   Maximize2,
   Minimize2,
   Plus,
+  Scissors,
   Square,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -48,6 +49,7 @@ import { AttachmentChip, formatBytes } from "./components/AttachmentChip";
 import { ComposerModelBadge } from "./components/ComposerModelBadge";
 import { ContextChip } from "./components/ContextChip";
 import { RunElapsedStrip } from "./components/RunElapsedStrip";
+import { ScreenCaptureOverlay } from "./components/ScreenCaptureOverlay";
 import { SkillSelectorButton } from "./components/SkillSelectorButton";
 import { SlashCommandPalette } from "./components/SlashCommandPalette";
 
@@ -119,6 +121,7 @@ export function ThreadComposer({
   const [value, setValue] = useState("");
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [capturing, setCapturing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -185,6 +188,19 @@ export function ThreadComposer({
       }
     },
     [enqueue, formatRejection],
+  );
+
+  const startScreenshot = useCallback(() => {
+    setCapturing(true);
+  }, []);
+
+  const handleScreenshotComplete = useCallback(
+    (file: File) => {
+      setCapturing(false);
+      setInlineError(null);
+      enqueue([file]);
+    },
+    [enqueue],
   );
 
   const {
@@ -691,6 +707,41 @@ export function ThreadComposer({
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
+            <TooltipProvider delayDuration={200} skipDelayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    disabled={disabled || full || isStreaming}
+                    aria-label={t("thread.composer.screenshot.label")}
+                    onClick={startScreenshot}
+                    className={cn(
+                      "rounded-full text-muted-foreground hover:text-foreground",
+                      isHero
+                        ? "h-8 w-8 border border-border/55 bg-card shadow-[0_2px_8px_rgba(15,23,42,0.05)] hover:bg-card"
+                        : "h-9 w-9 border border-border/55 bg-card shadow-[0_2px_8px_rgba(15,23,42,0.05)] hover:bg-card",
+                    )}
+                  >
+                    <Scissors className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  align="center"
+                  sideOffset={8}
+                  collisionPadding={12}
+                  className={cn(
+                    "rounded-[10px] border-border/60 bg-popover/95 px-2.5 py-1.5",
+                    "text-[11.5px] leading-snug text-popover-foreground",
+                    "shadow-md backdrop-blur",
+                  )}
+                >
+                  {t("thread.composer.screenshot.hint")}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
             {showAgentSelector ? (
               <AgentSelectorButton
                 agents={agents}
@@ -826,6 +877,12 @@ export function ThreadComposer({
           onChange={onWorkspaceScopeChange}
         />
       </div>
+      {capturing ? (
+        <ScreenCaptureOverlay
+          onComplete={handleScreenshotComplete}
+          onCancel={() => setCapturing(false)}
+        />
+      ) : null}
     </form>
   );
 }

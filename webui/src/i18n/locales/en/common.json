@@ -480,6 +480,28 @@
       "attachTooltipLimit": "Up to {{max}} attachments per upload",
       "attachTooltipImages": "Images: PNG / JPEG / WebP / GIF",
       "attachTooltipDocs": "Documents: PDF / Word / Excel / PPT / TXT / MD / CSV / JSON / XML / HTML / YAML, etc.",
+      "screenshot": {
+        "label": "Take a screenshot",
+        "hint": "Capture a region and attach it to the message",
+        "dialogAria": "Screen capture",
+        "loadingHint": "Preparing screen capture…",
+        "dragHint": "Drag to select a region",
+        "sharingHint": "Screen is being shared — this enables one-click screenshots until you stop sharing via the browser toolbar",
+        "cancel": "Cancel",
+        "confirm": "Send",
+        "undo": "Undo",
+        "textPlaceholder": "Enter text",
+        "tool": {
+          "rect": "Rectangle",
+          "ellipse": "Ellipse",
+          "arrow": "Arrow",
+          "pencil": "Pencil",
+          "text": "Text"
+        },
+        "errorDenied": "Screen capture was denied or cancelled.",
+        "errorNotSupported": "Screen capture is not supported in this browser.",
+        "errorEmpty": "The selected region is empty. Try again."
+      },
       "skillHint": "Please use the \"{{name}}\" skill to complete the following task:",
       "contextChip": {
         "full": "{{count}} · {{ctx}} ctx",
@@ -801,8 +823,6 @@
       "memory": "Two-layer memory system with Dream-managed knowledge files",
       "my": "Check and set the agent's own runtime state",
       "skill-creator": "Create or update AgentSkills",
-      "summarize": "Summarize or extract text from URLs, podcasts, and local files",
-      "tmux": "Remote-control tmux sessions by sending keystrokes and scraping output",
       "update-setup": "One-time setup wizard for the Erza upgrade skill",
       "weather": "Get current weather and forecasts (no API key required)"
     }

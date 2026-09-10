@@ -479,6 +479,28 @@
       "attachTooltipLimit": "单次上传最多 {{max}} 个附件",
       "attachTooltipImages": "图片：PNG / JPEG / WebP / GIF",
       "attachTooltipDocs": "文档：PDF / Word / Excel / PPT / TXT / MD / CSV / JSON / XML / HTML / YAML 等",
+      "screenshot": {
+        "label": "截图",
+        "hint": "截取屏幕区域并附加到消息",
+        "dialogAria": "屏幕截图",
+        "loadingHint": "正在准备截图…",
+        "dragHint": "拖动选择截图区域",
+        "sharingHint": "正在共享屏幕——在浏览器停止共享前，可一键连续截图",
+        "cancel": "取消",
+        "confirm": "发送",
+        "undo": "撤销",
+        "textPlaceholder": "输入文字",
+        "tool": {
+          "rect": "矩形",
+          "ellipse": "椭圆",
+          "arrow": "箭头",
+          "pencil": "画笔",
+          "text": "文字"
+        },
+        "errorDenied": "已拒绝或取消屏幕捕获。",
+        "errorNotSupported": "当前浏览器不支持屏幕捕获。",
+        "errorEmpty": "所选区域为空，请重试。"
+      },
       "skillHint": "请使用 skill \"{{name}}\" 完成以下任务：",
       "contextChip": {
         "full": "{{count}} · {{ctx}} 上下文",
@@ -801,8 +823,6 @@
       "memory": "双层记忆系统，配合做梦管理知识文件",
       "my": "检查和设置 agent 自身的运行时状态",
       "skill-creator": "创建或更新 Agent 技能",
-      "summarize": "从 URL、播客和本地文件提取摘要或转录文本",
-      "tmux": "通过发送按键和抓取输出远程控制 tmux 会话",
       "update-setup": "Erza 升级技能的一次性设置向导",
       "weather": "获取当前天气和预报（无需 API key）"
     }
