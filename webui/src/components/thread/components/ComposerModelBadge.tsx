@@ -92,6 +92,7 @@ export function ComposerModelBadge({
   const containerClass = cn(
     "inline-flex min-w-0 items-center rounded-full border border-border/55 bg-card font-medium text-foreground/82",
     "shadow-[0_2px_8px_rgba(15,23,42,0.045)]",
+    "focus-visible:outline-none focus-visible:ring-0",
     isHero ? "h-8 max-w-[12.5rem] gap-1.5 px-2 text-[11.5px]" : "h-9 max-w-[12rem] gap-2 px-2.5 text-[12px]",
   );
 

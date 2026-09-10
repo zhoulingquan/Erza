@@ -116,12 +116,15 @@ export function ThreadComposer({
   prefillText = null,
   onPrefillConsumed,
   maxMessageBytes,
+  onCaptureScreen,
 }: ThreadComposerProps) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [capturing, setCapturing] = useState(false);
+  // 后端系统级截图的 objectURL;null 表示走 getDisplayMedia 实时流模式。
+  const [captureImage, setCaptureImage] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -191,16 +194,34 @@ export function ThreadComposer({
   );
 
   const startScreenshot = useCallback(() => {
-    setCapturing(true);
+    if (capturing) return;
+    void (async () => {
+      // 优先走后端系统级截图(本地部署无浏览器授权弹卡,直接进入暗色框选);
+      // 失败时回退 getDisplayMedia 流模式。
+      let url: string | null = null;
+      if (onCaptureScreen) {
+        url = await onCaptureScreen();
+      }
+      setCaptureImage(url);
+      setCapturing(true);
+    })();
+  }, [capturing, onCaptureScreen]);
+
+  const closeCapture = useCallback(() => {
+    setCaptureImage((url) => {
+      if (url) URL.revokeObjectURL(url);
+      return null;
+    });
+    setCapturing(false);
   }, []);
 
   const handleScreenshotComplete = useCallback(
     (file: File) => {
-      setCapturing(false);
+      closeCapture();
       setInlineError(null);
       enqueue([file]);
     },
-    [enqueue],
+    [closeCapture, enqueue],
   );
 
   const {
@@ -252,7 +273,8 @@ export function ThreadComposer({
         : null,
     [agents, selectedAgentId],
   );
-  const showAgentSelector = agents.length > 0;
+  // @ 子代理按钮常驻显示:无 agent 时下拉菜单展示创建引导,
+  // 避免入口因"未配置过 agent"而不可见(见 AgentSelectorButton)。
   // 过滤出 available 且未禁用的 skill,作为下拉菜单可选列表。
   const selectableSkills = useMemo(
     () => skills.filter((skill) => skill.available && !skill.disabled),
@@ -606,7 +628,7 @@ export function ThreadComposer({
                   className={cn(
                     "absolute right-2 top-2 z-20 grid h-7 w-7 place-items-center rounded-full",
                     "text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "focus-visible:outline-none focus-visible:ring-0",
                   )}
                 >
                   {expanded ? (
@@ -669,6 +691,7 @@ export function ThreadComposer({
                     onClick={() => fileInputRef.current?.click()}
                     className={cn(
                       "rounded-full text-muted-foreground hover:text-foreground",
+                      "focus-visible:ring-0 focus-visible:ring-offset-0",
                       isHero
                         ? "h-8 w-8 border border-border/55 bg-card shadow-[0_2px_8px_rgba(15,23,42,0.05)] hover:bg-card"
                         : "h-9 w-9 border border-border/55 bg-card shadow-[0_2px_8px_rgba(15,23,42,0.05)] hover:bg-card",
@@ -719,6 +742,7 @@ export function ThreadComposer({
                     onClick={startScreenshot}
                     className={cn(
                       "rounded-full text-muted-foreground hover:text-foreground",
+                      "focus-visible:ring-0 focus-visible:ring-offset-0",
                       isHero
                         ? "h-8 w-8 border border-border/55 bg-card shadow-[0_2px_8px_rgba(15,23,42,0.05)] hover:bg-card"
                         : "h-9 w-9 border border-border/55 bg-card shadow-[0_2px_8px_rgba(15,23,42,0.05)] hover:bg-card",
@@ -742,18 +766,16 @@ export function ThreadComposer({
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
-            {showAgentSelector ? (
-              <AgentSelectorButton
-                agents={agents}
-                selectedAgentId={selectedAgentId}
-                disabled={disabled}
-                isHero={isHero}
-                onSelect={handleSelectAgent}
-                ariaLabel={t("agents.title")}
-                emptyLabel={t("agents.empty")}
-                clearLabel={t("agents.clear")}
-              />
-            ) : null}
+            <AgentSelectorButton
+              agents={agents}
+              selectedAgentId={selectedAgentId}
+              disabled={disabled}
+              isHero={isHero}
+              onSelect={handleSelectAgent}
+              ariaLabel={t("agents.title")}
+              emptyLabel={t("agents.empty")}
+              clearLabel={t("agents.clear")}
+            />
             {showSkillSelector ? (
               <SkillSelectorButton
                 skills={selectableSkills}
@@ -807,6 +829,7 @@ export function ThreadComposer({
                       onClick={showStopButton ? onStop : undefined}
                       className={cn(
                         "rounded-full transition-transform",
+                        "focus-visible:ring-0 focus-visible:ring-offset-0",
                         showStopButton
                           ? "border border-border/70 bg-card text-foreground/85 shadow-[0_3px_10px_rgba(15,23,42,0.08)] hover:bg-muted/65 hover:text-foreground disabled:text-muted-foreground/50"
                           : isHero
@@ -879,8 +902,9 @@ export function ThreadComposer({
       </div>
       {capturing ? (
         <ScreenCaptureOverlay
+          imageSrc={captureImage}
           onComplete={handleScreenshotComplete}
-          onCancel={() => setCapturing(false)}
+          onCancel={closeCapture}
         />
       ) : null}
     </form>

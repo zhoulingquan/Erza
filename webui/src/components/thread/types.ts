@@ -64,6 +64,9 @@ export interface ThreadComposerProps {
   /** 服务端 WebSocket 帧大小上限(字节)。Composer 在发送前对最终 JSON frame
    * 的 UTF-8 字节数做校验,超限直接拦截并保留草稿(见设计 §4.5)。 */
   maxMessageBytes?: number;
+  /** 后端系统级截图(本地部署直达路径):点击剪刀按钮时调用,成功返回截图
+   * 的 objectURL,失败返回 null(此时回退浏览器 getDisplayMedia 授权流程)。 */
+  onCaptureScreen?: () => Promise<string | null>;
 }
 
 /** 斜杠命令面板的弹出位置(输入框上方或下方)。 */

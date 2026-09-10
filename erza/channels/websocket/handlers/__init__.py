@@ -14,6 +14,7 @@ handler 按功能分组,每个文件负责一组相关端点。
 - settings: Provider/MCP/搜索等配置(18 个端点,含 async)
 - sessions: 会话消息/线程/删除/回退(4 个正则端点)
 - media: 签名媒体文件读取(1 个正则端点)
+- screenshot: 系统级截屏(1 个端点,仅 localhost)
 """
 
 # 导入各 handler 模块,触发装饰器注册。顺序无关(路由表是声明式的)。
@@ -24,6 +25,7 @@ from . import (  # noqa: F401
     cron,
     media,
     misc,
+    screenshot,
     sessions,
     settings,
     skills,

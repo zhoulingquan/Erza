@@ -872,6 +872,21 @@ export async function fetchTools(
   return request<ToolsPayload>(`${base}/api/tools`, token);
 }
 
+/** 请求网关主机的系统级截图(本地部署直达路径,无浏览器授权弹卡)。
+ * 失败(非 localhost 连接 / 无头环境 / 旧版网关无此端点)时抛 ApiError,
+ * 调用方回退到 getDisplayMedia 流程。 */
+export async function fetchScreenshot(
+  token: string,
+  base: string = "",
+): Promise<Blob> {
+  const res = await fetch(`${base}/api/screenshot`, {
+    headers: { Authorization: `Bearer ${token}` },
+    credentials: "same-origin",
+  });
+  if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`);
+  return res.blob();
+}
+
 export async function importToolFile(
   token: string,
   filename: string,

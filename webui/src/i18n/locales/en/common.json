@@ -489,15 +489,6 @@
         "sharingHint": "Screen is being shared — this enables one-click screenshots until you stop sharing via the browser toolbar",
         "cancel": "Cancel",
         "confirm": "Send",
-        "undo": "Undo",
-        "textPlaceholder": "Enter text",
-        "tool": {
-          "rect": "Rectangle",
-          "ellipse": "Ellipse",
-          "arrow": "Arrow",
-          "pencil": "Pencil",
-          "text": "Text"
-        },
         "errorDenied": "Screen capture was denied or cancelled.",
         "errorNotSupported": "Screen capture is not supported in this browser.",
         "errorEmpty": "The selected region is empty. Try again."

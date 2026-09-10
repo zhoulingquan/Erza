@@ -6,7 +6,7 @@ import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
 import { ThreadViewport } from "@/components/thread/ThreadViewport";
 import { useErzaStream, type SendImage, type SendOptions } from "@/hooks/useErzaStream";
 import { useSessionHistory } from "@/hooks/useSessions";
-import { fetchAgents, listSlashCommands, rewindSession, updateSettings, fetchSkills } from "@/lib/api";
+import { fetchAgents, fetchScreenshot, listSlashCommands, rewindSession, updateSettings, fetchSkills } from "@/lib/api";
 import { inferProviderFromModelName, providerDisplayLabel } from "@/lib/provider-brand";
 import type {
   AgentInfo,
@@ -205,6 +205,19 @@ export function ThreadShell({
   const [prefillText, setPrefillText] = useState<string | null>(null);
   const clearPrefillText = useCallback(() => setPrefillText(null), []);
   const pendingFirstRef = useRef<PendingFirstMessage | null>(null);
+
+  // 后端系统级截图(本地部署直达路径):失败时返回 null,composer 回退
+  // 到浏览器 getDisplayMedia 授权流程。
+  const handleCaptureScreen = useCallback(async (): Promise<string | null> => {
+    if (!token) return null;
+    try {
+      const blob = await fetchScreenshot(token);
+      if (blob.size === 0 || !blob.type.startsWith("image/")) return null;
+      return URL.createObjectURL(blob);
+    } catch {
+      return null;
+    }
+  }, [token]);
 
   // ---------------------------------------------------------------------------
   // Thread message cache — 6 refs that cooperate to keep per-chat in-memory
@@ -646,6 +659,7 @@ export function ThreadShell({
           prefillText={prefillText}
           onPrefillConsumed={clearPrefillText}
           maxMessageBytes={maxMessageBytes}
+          onCaptureScreen={handleCaptureScreen}
         />
       ) : (
         <ThreadComposer
@@ -682,6 +696,7 @@ export function ThreadShell({
           contextWindowTokens={contextWindowTokens}
           contextUsage={contextUsage}
           maxMessageBytes={maxMessageBytes}
+          onCaptureScreen={handleCaptureScreen}
         />
       )}
     </>

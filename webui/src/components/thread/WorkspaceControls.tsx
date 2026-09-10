@@ -144,6 +144,7 @@ export function WorkspaceProjectPicker({
               "inline-flex h-7 max-w-[18rem] items-center gap-2 rounded-full px-2.5",
               "text-[12px] font-medium text-muted-foreground/90 transition-colors",
               "hover:bg-background/70 hover:text-foreground disabled:pointer-events-none disabled:opacity-55",
+              "focus-visible:outline-none focus-visible:ring-0",
               currentProjectScope && "text-foreground/82",
             )}
           >

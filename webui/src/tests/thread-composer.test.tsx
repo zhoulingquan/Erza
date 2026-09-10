@@ -501,4 +501,76 @@ describe("ThreadComposer", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
   });
+
+  it("enters backend screenshot mode when onCaptureScreen resolves with a URL", async () => {
+    const onCaptureScreen = vi.fn().mockResolvedValue("blob:screenshot-1");
+    render(
+      <ThreadComposer onSend={vi.fn()} onCaptureScreen={onCaptureScreen} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Take a screenshot" }));
+
+    await waitFor(() => {
+      expect(onCaptureScreen).toHaveBeenCalledTimes(1);
+    });
+    const dialog = await screen.findByRole("dialog");
+    // 后端截图模式:overlay 渲染静态 img,而不是 getDisplayMedia 的 video。
+    const img = dialog.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("blob:screenshot-1");
+    expect(dialog.querySelector("video")).toBeNull();
+  });
+
+  it("falls back to the capture stream when onCaptureScreen resolves null", async () => {
+    const onCaptureScreen = vi.fn().mockResolvedValue(null);
+    render(
+      <ThreadComposer onSend={vi.fn()} onCaptureScreen={onCaptureScreen} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Take a screenshot" }));
+
+    await waitFor(() => {
+      expect(onCaptureScreen).toHaveBeenCalledTimes(1);
+    });
+    const dialog = await screen.findByRole("dialog");
+    // 回退模式:无后端截图 img,等待 getDisplayMedia 流。
+    expect(dialog.querySelector("img")).toBeNull();
+  });
+
+  it("always shows the @ subagent button even without configured agents", () => {
+    render(<ThreadComposer onSend={vi.fn()} />);
+
+    expect(
+      screen.getByRole("button", { name: "Agents" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the @ menu and selects a subagent", async () => {
+    const onSelectAgent = vi.fn();
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        agents={[
+          {
+            name: "researcher",
+            description: "Runs research",
+            model: null,
+            tools: null,
+            avatar: null,
+            system_prompt: "",
+            path: null,
+          },
+        ]}
+        onSelectAgent={onSelectAgent}
+      />,
+    );
+
+    // Radix DropdownMenu 在 jsdom 中以 pointerDown 打开
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Agents" }));
+
+    const item = await screen.findByRole("menuitem", { name: /researcher/ });
+    fireEvent.click(item);
+
+    expect(onSelectAgent).toHaveBeenCalledWith("researcher");
+  });
 });

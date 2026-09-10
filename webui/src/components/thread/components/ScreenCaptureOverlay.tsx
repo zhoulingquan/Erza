@@ -7,54 +7,22 @@ import {
 } from "react";
 
 import { createPortal } from "react-dom";
-import {
-  Check,
-  Circle,
-  CornerDownRight,
-  Pencil,
-  Square,
-  Type,
-  Undo2,
-  X,
-} from "lucide-react";
+import { Check, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-
-import { cn } from "@/lib/utils";
 
 export interface ScreenCaptureOverlayProps {
   onComplete: (file: File) => void;
   onCancel: () => void;
+  /** 后端系统级截图的 objectURL(本地部署直达模式)。
+   * 提供时以静态图片代替实时屏幕流:与微信截图一致,框选的是
+   * 点击瞬间的屏幕快照;为空时回退 getDisplayMedia 实时流。 */
+  imageSrc?: string | null;
 }
-
-type Tool = "rect" | "ellipse" | "arrow" | "pencil" | "text";
 
 interface Point {
   x: number;
   y: number;
 }
-
-/** 已提交的标注图形(坐标均为选中区域内的原生像素)。 */
-type Shape =
-  | { kind: "rect"; a: Point; b: Point }
-  | { kind: "ellipse"; a: Point; b: Point }
-  | { kind: "arrow"; a: Point; b: Point }
-  | { kind: "pencil"; pts: Point[] }
-  | { kind: "text"; p: Point; text: string; size: number };
-
-/** 正在绘制中的图形 / 铅笔路径。 */
-type Draft =
-  | { kind: "rect"; a: Point; b: Point }
-  | { kind: "ellipse"; a: Point; b: Point }
-  | { kind: "arrow"; a: Point; b: Point }
-  | { kind: "pencil"; pts: Point[] };
-
-const TOOLS: Array<{ tool: Tool; icon: typeof Square; key: string }> = [
-  { tool: "rect", icon: Square, key: "rect" },
-  { tool: "ellipse", icon: Circle, key: "ellipse" },
-  { tool: "arrow", icon: CornerDownRight, key: "arrow" },
-  { tool: "pencil", icon: Pencil, key: "pencil" },
-  { tool: "text", icon: Type, key: "text" },
-];
 
 function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
   return new Promise((resolve) => {
@@ -62,25 +30,41 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
   });
 }
 
-/** 计算 video 在 overlay 内按 object-fit: contain 渲染出的可视矩形(overlay 坐标)。 */
+/** 计算 capture 源(video 或 img)在 overlay 内按 object-fit: contain
+ * 渲染出的可视矩形(overlay 坐标)。 */
 function getDisplayRect(el: {
-  videoWidth: number;
-  videoHeight: number;
+  width: number;
+  height: number;
   clientWidth: number;
   clientHeight: number;
 }) {
   const scale = Math.min(
-    el.clientWidth / el.videoWidth,
-    el.clientHeight / el.videoHeight,
+    el.clientWidth / el.width,
+    el.clientHeight / el.height,
   );
-  const dw = el.videoWidth * scale;
-  const dh = el.videoHeight * scale;
+  const dw = el.width * scale;
+  const dh = el.height * scale;
   return {
     left: (el.clientWidth - dw) / 2,
     top: (el.clientHeight - dh) / 2,
     width: dw,
     height: dh,
   };
+}
+
+/** 确认工具栏定位:默认在选区下方;选区贴近视口底部时翻转到选区上方,
+ * 水平方向夹紧在视口内(否则确认按钮可能被挤出屏幕,用户无从点击)。 */
+function toolbarStyle(
+  sel: { x: number; y: number; w: number; h: number },
+  container: HTMLElement | null,
+): React.CSSProperties {
+  const cw = container?.clientWidth ?? window.innerWidth;
+  const ch = container?.clientHeight ?? window.innerHeight;
+  const left = Math.min(Math.max(sel.x + sel.w / 2, 100), Math.max(cw - 100, 100));
+  if (sel.y + sel.h + 60 <= ch) {
+    return { left, top: sel.y + sel.h + 12, transform: "translateX(-50%)" };
+  }
+  return { left, top: sel.y - 12, transform: "translate(-50%, -100%)" };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -130,42 +114,40 @@ async function acquireStream(): Promise<AcquireResult> {
   }
 }
 
-let uid = 0;
-function nextId(): number {
-  uid += 1;
-  return uid;
-}
-
 /** 全屏区域截图 Overlay,交互参照微信截图:
- * 捕获屏幕(首次弹系统卡,之后复用持久流)→ 全屏调暗供拖选区域 →
- * 选区下方弹出标注工具栏(矩形/椭圆/箭头/铅笔/文字/撤销/取消/发送),
- * 确认后按原分辨率裁剪当前帧并烘焙标注为 PNG。 */
-export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOverlayProps) {
+ * 捕获屏幕(本地部署走后端系统截图直出快照;否则 getDisplayMedia 首次
+ * 弹系统卡后复用持久流)→ 全屏调暗供拖选区域 →
+ * 选区下方弹出「取消/发送」工具栏,确认后按原分辨率裁剪当前帧为 PNG。 */
+export function ScreenCaptureOverlay({ onComplete, onCancel, imageSrc = null }: ScreenCaptureOverlayProps) {
   const { t } = useTranslation();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // 当前捕获源(video 流或后端截图 img)的原生像素尺寸
+  const sourceSize = useCallback((): { w: number; h: number } => {
+    if (imageSrc) {
+      const img = imgRef.current;
+      return { w: img?.naturalWidth || 0, h: img?.naturalHeight || 0 };
+    }
+    const video = videoRef.current;
+    return { w: video?.videoWidth || 0, h: video?.videoHeight || 0 };
+  }, [imageSrc]);
 
   // 选区(overlay 坐标,记录拖选时的两个角点)
   const selStartRef = useRef<Point | null>(null);
   const selEndRef = useRef<Point | null>(null);
   const [sel, setSel] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
 
-  const [mode, setMode] = useState<"select" | "annotate">("select");
-  const [tool, setTool] = useState<Tool>("rect");
+  // select: 拖选中;confirm: 选区已锁定,展示取消/发送工具栏
+  const [mode, setMode] = useState<"select" | "confirm">("select");
 
-  // 标注
-  const annoRef = useRef<HTMLCanvasElement>(null);
-  const shapesRef = useRef<Shape[]>([]);
-  const draftRef = useRef<Draft | null>(null);
-  const [shapesVersion, setShapesVersion] = useState(0);
-  const [textInput, setTextInput] = useState<{ id: number; x: number; y: number } | null>(null);
-  const textRef = useRef<HTMLInputElement>(null);
-
-  // 获取(或复用)捕获流并挂到 video
+  // 获取(或复用)捕获流并挂到 video(后端截图模式下跳过)
   useEffect(() => {
+    if (imageSrc) return;
     let cancelled = false;
     void (async () => {
       const result = await acquireStream();
@@ -183,8 +165,10 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [imageSrc]);
 
+  // ready 检测:video 等 loadeddata;img 由 JSX 的 onLoad 直接置位,
+  // 这里仅在渲染后同步兜底一次(图片可能已被浏览器解码缓存)。
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -193,17 +177,22 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
     return () => video.removeEventListener("loadeddata", onData);
   }, []);
 
+  useEffect(() => {
+    if (!imageSrc) return;
+    const img = imgRef.current;
+    if (img?.complete && img.naturalWidth > 0) {
+      setReady(true);
+    }
+  }, [imageSrc]);
+
   // 把 overlay 坐标映射到屏幕(原生)坐标
   const toNative = useCallback((p: Point): Point => {
-    const video = videoRef.current;
     const container = containerRef.current;
-    if (!video || !container) return p;
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    if (!vw || !vh) return p;
+    const { w: vw, h: vh } = sourceSize();
+    if (!container || !vw || !vh) return p;
     const videoRect = getDisplayRect({
-      videoWidth: vw,
-      videoHeight: vh,
+      width: vw,
+      height: vh,
       clientWidth: container.clientWidth,
       clientHeight: container.clientHeight,
     });
@@ -211,7 +200,7 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
       x: ((p.x - videoRect.left) / videoRect.width) * vw,
       y: ((p.y - videoRect.top) / videoRect.height) * vh,
     };
-  }, []);
+  }, [sourceSize]);
 
   // 把 overlay 坐标的选区转为原生像素选区
   const nativeSelection = useCallback((): { x: number; y: number; w: number; h: number } | null => {
@@ -227,16 +216,46 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
   }, [toNative]);
 
   // ---- 拖选 ----
-  const onSelectPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    selStartRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    selEndRef.current = null;
-    setSel(null);
-  }, []);
+  // 拖选进行中标记:只有按住主键拖动才更新选区。松开后 selStartRef 仍保留
+  // (裁剪要用),若不设此标记,松开后的鼠标移动会持续改写选区,选区框和
+  // 工具栏跟着鼠标漂移,确认按钮根本无法点击。
+  const selectDraggingRef = useRef(false);
+
+  const onSelectPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      // 选区已锁定时,选区内按下不重置选区(防误触丢失);选区外按下 =
+      // 放弃当前选区,重新拖选。
+      if (
+        mode === "confirm" &&
+        sel &&
+        p.x >= sel.x &&
+        p.x <= sel.x + sel.w &&
+        p.y >= sel.y &&
+        p.y <= sel.y + sel.h
+      ) {
+        return;
+      }
+      selectDraggingRef.current = true;
+      selStartRef.current = p;
+      selEndRef.current = null;
+      setSel(null);
+      setMode("select");
+      try {
+        // 捕获指针:拖出窗口再松开也能收到 pointerup,选区状态不卡死
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // 环境不支持时忽略,窗口内拖选不受影响
+      }
+    },
+    [mode, sel],
+  );
 
   const onSelectPointerMove = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
-      if (!selStartRef.current) return;
+      if (!selectDraggingRef.current || !selStartRef.current) return;
       const rect = e.currentTarget.getBoundingClientRect();
       selEndRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
       const a = selStartRef.current;
@@ -252,189 +271,22 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
   );
 
   const onSelectPointerUp = useCallback(() => {
+    selectDraggingRef.current = false;
     if (!sel || sel.w < 2 || sel.h < 2) {
       selStartRef.current = null;
       selEndRef.current = null;
       setSel(null);
       return;
     }
-    setMode("annotate");
+    setMode("confirm");
   }, [sel]);
 
-  // 标注:绘制颜色与线宽(原生像素)
-  const paintCtx = useCallback(() => {
-    const canvas = annoRef.current;
-    if (!canvas) return null;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    const virtualScale = canvas.width / (canvas.clientWidth || 1);
-    ctx.lineWidth = Math.max(2, 4 * virtualScale);
-    ctx.strokeStyle = "#ef4444";
-    ctx.fillStyle = "#ef4444";
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    return ctx;
-  }, []);
-
-  const drawShape = useCallback(
-    (ctx: CanvasRenderingContext2D | null, shape: Shape) => {
-      if (!ctx) return;
-      ctx.beginPath();
-      if (shape.kind === "rect") {
-        ctx.strokeRect(shape.a.x, shape.a.y, shape.b.x - shape.a.x, shape.b.y - shape.a.y);
-      } else if (shape.kind === "ellipse") {
-        const cx = (shape.a.x + shape.b.x) / 2;
-        const cy = (shape.a.y + shape.b.y) / 2;
-        ctx.ellipse(cx, cy, Math.abs(shape.b.x - shape.a.x) / 2, Math.abs(shape.b.y - shape.a.y) / 2, 0, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (shape.kind === "arrow") {
-        ctx.moveTo(shape.a.x, shape.a.y);
-        ctx.lineTo(shape.b.x, shape.b.y);
-        ctx.stroke();
-        const angle = Math.atan2(shape.b.y - shape.a.y, shape.b.x - shape.a.x);
-        const size = Math.max(6, 19);
-        ctx.beginPath();
-        ctx.moveTo(shape.b.x, shape.b.y);
-        ctx.lineTo(shape.b.x - size * Math.cos(angle - 0.45), shape.b.y - size * Math.sin(angle - 0.45));
-        ctx.lineTo(shape.b.x - size * Math.cos(angle + 0.45), shape.b.y - size * Math.sin(angle + 0.45));
-        ctx.closePath();
-        ctx.fill();
-      } else if (shape.kind === "pencil") {
-        if (shape.pts.length < 1) return;
-        ctx.moveTo(shape.pts[0].x, shape.pts[0].y);
-        for (const p of shape.pts) ctx.lineTo(p.x, p.y);
-        ctx.stroke();
-      } else if (shape.kind === "text") {
-        ctx.font = `${shape.size}px system-ui, sans-serif`;
-        ctx.fillText(shape.text, shape.p.x, shape.p.y);
-      }
-    },
-    [],
-  );
-
-  const redrawShapes = useCallback(() => {
-    const canvas = annoRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
-    const paintCtxLocal = paintCtx();
-    if (!paintCtxLocal) return;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    // Annotation canvas may be larger than display size; ensure full clear.
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    for (const s of shapesRef.current) drawShape(ctx, s);
-    if (draftRef.current) {
-      if (draftRef.current.kind === "pencil") {
-        drawShape(ctx, { kind: "pencil", pts: draftRef.current.pts });
-      } else {
-        drawShape(ctx, draftRef.current);
-      }
-    }
-  }, [drawShape, paintCtx]);
-
-  // 触发一次重绘(shapes 提交 / 尺寸改变后)
-  useEffect(() => {
-    redrawShapes();
-  }, [shapesVersion, redrawShapes]);
-
-  // 进入标注模式时,按选区原生尺寸初始化标注 canvas 并铺满选区显示
-  useEffect(() => {
-    if (mode !== "annotate") return;
-    const native = nativeSelection();
-    const canvas = annoRef.current;
-    if (!native || !canvas) return;
-    canvas.width = Math.max(1, Math.round(native.w));
-    canvas.height = Math.max(1, Math.round(native.h));
-    redrawShapes();
-  }, [mode, nativeSelection, redrawShapes]);
-
-  const annoToNative = useCallback(
-    (e: ReactPointerEvent<HTMLCanvasElement>): Point => {
-      const canvas = annoRef.current;
-      if (!canvas) return { x: 0, y: 0 };
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-      return {
-        x: (e.clientX - rect.left) * scaleX,
-        y: (e.clientY - rect.top) * scaleY,
-      };
-    },
-    [],
-  );
-
-  const onAnnotatePointerDown = useCallback(
-    (e: ReactPointerEvent<HTMLCanvasElement>) => {
-      if (tool === "text") {
-        const p = annoToNative(e);
-        setTextInput({ id: nextId(), x: p.x, y: p.y });
-        return;
-      }
-      const p = annoToNative(e);
-      if (tool === "pencil") {
-        draftRef.current = { kind: "pencil", pts: [p] };
-      } else {
-        draftRef.current = { kind: tool, a: p, b: p };
-      }
-      e.currentTarget.setPointerCapture(e.pointerId);
-    },
-    [annoToNative, tool],
-  );
-
-  const onAnnotatePointerMove = useCallback(
-    (e: ReactPointerEvent<HTMLCanvasElement>) => {
-      const d = draftRef.current;
-      if (!d) return;
-      const p = annoToNative(e);
-      if (d.kind === "pencil") {
-        d.pts = [...d.pts, p];
-      } else {
-        d.b = { ...p };
-      }
-      redrawShapes();
-    },
-    [annoToNative, redrawShapes],
-  );
-
-  const onAnnotatePointerUp = useCallback(() => {
-    const d = draftRef.current;
-    if (d) {
-      if (d.kind !== "pencil" && Math.abs(d.b.x - d.a.x) > 1 && Math.abs(d.b.y - d.a.y) > 1) {
-        shapesRef.current = [...shapesRef.current, { ...d }];
-      } else if (d.kind === "pencil" && d.pts.length > 0) {
-        shapesRef.current = [...shapesRef.current, { kind: "pencil", pts: d.pts }];
-      }
-      draftRef.current = null;
-      setShapesVersion((v) => v + 1);
-    }
-  }, []);
-
-  const commitText = useCallback(
-    (displayText: string) => {
-      if (!textInput) return;
-      const video = videoRef.current;
-      const container = containerRef.current;
-      const clientH = container?.clientHeight || 1;
-      const nativeH = video?.videoHeight || 0;
-      const scaleY = clientH > 0 ? nativeH / clientH : 1;
-      const size = Math.max(12, Math.round(16 * scaleY));
-      const textLib = displayText.trim();
-      if (textLib) {
-        shapesRef.current = [...shapesRef.current, {
-          kind: "text",
-          p: { x: textInput.x, y: textInput.y },
-          text: textLib,
-          size,
-        }];
-        setShapesVersion((v) => v + 1);
-      }
-      setTextInput(null);
-    },
-    [textInput],
-  );
-
-  const undo = useCallback(() => {
-    shapesRef.current = shapesRef.current.slice(0, -1);
-    setShapesVersion((v) => v + 1);
+  // 系统取消指针(切窗口/触控手势)时终止拖选,避免残留在"跟鼠标"状态
+  const onSelectPointerCancel = useCallback(() => {
+    selectDraggingRef.current = false;
+    selStartRef.current = null;
+    selEndRef.current = null;
+    setSel(null);
   }, []);
 
   const cancel = useCallback(() => {
@@ -442,15 +294,16 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
   }, [onCancel]);
 
   const confirm = useCallback(() => {
-    const video = videoRef.current;
+    const source: HTMLVideoElement | HTMLImageElement | null = imageSrc
+      ? imgRef.current
+      : videoRef.current;
     const native = nativeSelection();
-    if (!video || !native || native.w < 2 || native.h < 2) {
+    if (!source || !native || native.w < 2 || native.h < 2) {
       setError("empty");
       return;
     }
     void (async () => {
-      const vw = video.videoWidth;
-      const vh = video.videoHeight;
+      const { w: vw, h: vh } = sourceSize();
       if (!vw || !vh) {
         setError("empty");
         return;
@@ -460,11 +313,7 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
       out.height = Math.round(native.h);
       const ctx = out.getContext("2d");
       if (!ctx) return;
-      ctx.drawImage(video, native.x, native.y, native.w, native.h, 0, 0, out.width, out.height);
-      const anno = annoRef.current;
-      if (anno && anno.width > 0) {
-        ctx.drawImage(anno, 0, 0);
-      }
+      ctx.drawImage(source, native.x, native.y, native.w, native.h, 0, 0, out.width, out.height);
       const blob = await canvasToBlob(out);
       if (!blob) {
         setError("empty");
@@ -472,29 +321,18 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
       }
       onComplete(new File([blob], `screenshot-${Date.now()}.png`, { type: "image/png" }));
     })();
-  }, [nativeSelection, onComplete]);
+  }, [imageSrc, nativeSelection, onComplete, sourceSize]);
 
   // Esc 取消
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (textInput) {
-          setTextInput(null);
-        } else {
-          cancel();
-        }
+        cancel();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cancel, textInput]);
-
-  // 文字输入框出现时置焦
-  useEffect(() => {
-    if (textInput) {
-      requestAnimationFrame(() => textRef.current?.focus());
-    }
-  }, [textInput]);
+  }, [cancel]);
 
   return createPortal(
     <div
@@ -504,20 +342,32 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
       aria-modal="true"
       aria-label={t("thread.composer.screenshot.dialogAria")}
     >
-      {/* 实时画面 + 调暗 / 亮区 */}
+      {/* 实时画面 / 后端截图 + 调暗 / 亮区 */}
       <div
         onPointerDown={onSelectPointerDown}
         onPointerMove={onSelectPointerMove}
         onPointerUp={onSelectPointerUp}
-        className="absolute inset-0 cursor-crosshair overflow-hidden bg-black"
+        onPointerCancel={onSelectPointerCancel}
+        className="absolute inset-0 cursor-crosshair touch-none overflow-hidden bg-black"
       >
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          className="h-full w-full object-contain"
-        />
+        {imageSrc ? (
+          <img
+            ref={imgRef}
+            src={imageSrc}
+            alt=""
+            draggable={false}
+            onLoad={() => setReady(true)}
+            className="block h-full w-full select-none object-contain"
+          />
+        ) : (
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="h-full w-full object-contain"
+          />
+        )}
         {ready && !sel ? <div className="absolute inset-0 bg-black/45" /> : null}
         {ready && sel ? (
           <div
@@ -530,22 +380,6 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
               boxShadow: "0 0 0 100vmax rgba(0,0,0,0.5)",
             }}
           />
-        ) : null}
-
-        {mode === "annotate" && sel ? (
-          <div
-            className="absolute overflow-hidden"
-            style={{ left: sel.x, top: sel.y, width: sel.w, height: sel.h }}
-          >
-            <canvas
-              ref={annoRef}
-              onPointerDown={onAnnotatePointerDown}
-              onPointerMove={onAnnotatePointerMove}
-              onPointerUp={onAnnotatePointerUp}
-              className="absolute left-0 top-0"
-              style={{ width: "100%", height: "100%", cursor: tool === "text" ? "text" : "crosshair" }}
-            />
-          </div>
         ) : null}
       </div>
 
@@ -561,71 +395,20 @@ export function ScreenCaptureOverlay({ onComplete, onCancel }: ScreenCaptureOver
           <p className="rounded-full bg-black/60 px-4 py-1.5 text-[13px] text-white backdrop-blur">
             {t("thread.composer.screenshot.dragHint")}
           </p>
-          <p className="rounded-full bg-black/40 px-3 py-1 text-[11.5px] text-white/70 backdrop-blur">
-            {t("thread.composer.screenshot.sharingHint")}
-          </p>
+          {!imageSrc ? (
+            <p className="rounded-full bg-black/40 px-3 py-1 text-[11.5px] text-white/70 backdrop-blur">
+              {t("thread.composer.screenshot.sharingHint")}
+            </p>
+          ) : null}
         </div>
       ) : null}
 
-      {/* 文字输入 */}
-      {textInput && sel ? (
-        <input
-          ref={textRef}
-          defaultValue=""
-          placeholder={t("thread.composer.screenshot.textPlaceholder")}
-          className="absolute z-10 rounded border border-white/70 bg-black/70 px-2 py-1 text-white outline-none"
-          style={{
-            left:
-              sel.x +
-              (textInput.x / (annoRef.current?.clientWidth || 1)) * sel.w,
-            top:
-              sel.y +
-              (textInput.y / (annoRef.current?.clientHeight || 1)) * sel.h,
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commitText(e.currentTarget.value);
-            if (e.key === "Escape") setTextInput(null);
-          }}
-          onBlur={() => setTextInput(null)}
-        />
-      ) : null}
-
-      {/* 标注工具栏 */}
-      {mode === "annotate" && sel ? (
+      {/* 确认工具栏 */}
+      {mode === "confirm" && sel ? (
         <div
           className="absolute z-20 flex items-center gap-1 rounded-xl border border-white/15 bg-black/80 p-1 backdrop-blur"
-          style={{
-            left: sel.x + sel.w / 2,
-            top: sel.y + sel.h + 12,
-            transform: "translateX(-50%)",
-          }}
+          style={toolbarStyle(sel, containerRef.current)}
         >
-          {TOOLS.map(({ tool: tk, icon: Icon, key }) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setTool(tk)}
-              aria-label={t(`thread.composer.screenshot.tool.${key}`)}
-              aria-pressed={tool === tk}
-              className={cn(
-                "grid h-8 w-8 place-items-center rounded-lg text-white transition-colors",
-                tool === tk ? "bg-white/20" : "hover:bg-white/10",
-              )}
-            >
-              <Icon className="h-4 w-4" />
-            </button>
-          ))}
-          <span className="mx-1 h-5 w-px bg-white/20" />
-          <button
-            type="button"
-            onClick={undo}
-            disabled={shapesRef.current.length === 0}
-            aria-label={t("thread.composer.screenshot.undo")}
-            className="grid h-8 w-8 place-items-center rounded-lg text-white transition-colors hover:bg-white/10 disabled:opacity-40"
-          >
-            <Undo2 className="h-4 w-4" />
-          </button>
-          <span className="mx-1 h-5 w-px bg-white/20" />
           <button
             type="button"
             onClick={cancel}

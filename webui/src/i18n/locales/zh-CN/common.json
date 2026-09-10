@@ -488,15 +488,6 @@
         "sharingHint": "正在共享屏幕——在浏览器停止共享前，可一键连续截图",
         "cancel": "取消",
         "confirm": "发送",
-        "undo": "撤销",
-        "textPlaceholder": "输入文字",
-        "tool": {
-          "rect": "矩形",
-          "ellipse": "椭圆",
-          "arrow": "箭头",
-          "pencil": "画笔",
-          "text": "文字"
-        },
         "errorDenied": "已拒绝或取消屏幕捕获。",
         "errorNotSupported": "当前浏览器不支持屏幕捕获。",
         "errorEmpty": "所选区域为空，请重试。"

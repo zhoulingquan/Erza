@@ -5,6 +5,8 @@
 /* Design tokens — HSL form, sourced from shadcn/ui's "neutral" palette. */
 @layer base {
   :root {
+    /* 让原生滚动条/表单控件按亮色渲染 */
+    color-scheme: light;
     --background: 0 0% 100%;
     --foreground: 240 3% 12%;
     --card: 0 0% 100%;
@@ -33,6 +35,8 @@
   }
 
   .dark {
+    /* 暗色主题下原生滚动条/表单控件跟随暗色,避免白色滚动条 */
+    color-scheme: dark;
     --background: 0 0% 10%;
     --foreground: 240 4% 96%;
     --card: 0 0% 12%;
@@ -284,5 +288,14 @@
   }
   .scrollbar-track-transparent::-webkit-scrollbar-track {
     background: transparent;
+  }
+
+  /* 完全隐藏滚动条,仅保留滚动功能 */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
   }
 }
