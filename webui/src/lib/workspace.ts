@@ -23,17 +23,6 @@ export function shortWorkspacePath(path: string): string {
   return `.../${parts.slice(-3).join("/")}`;
 }
 
-export function isAbsoluteWorkspacePath(path: string): boolean {
-  const trimmed = path.trim();
-  return (
-    trimmed === "~"
-    || trimmed.startsWith("~/")
-    || trimmed.startsWith("~\\")
-    || trimmed.startsWith("/")
-    || /^[A-Za-z]:[\\/]/.test(trimmed)
-  );
-}
-
 export function selectedProjectScope(
   scope: WorkspaceScopePayload | null,
   defaultScope: WorkspaceScopePayload | null,

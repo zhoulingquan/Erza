@@ -24,6 +24,7 @@ const ORIGINAL_INNER_HEIGHT = window.innerHeight;
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   Reflect.deleteProperty(window, "erzaHost");
   window.localStorage.clear();
   Object.defineProperty(window, "innerHeight", {
@@ -152,37 +153,22 @@ describe("ThreadComposer", () => {
 
     expect(await screen.findByRole("menuitem", { name: /Default workspace/ })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Open Local Folder/ })).toBeInTheDocument();
+    // 已无粘贴路径的入口:打开项目文件夹与手动输入行均已移除。
+    expect(screen.queryByRole("button", { name: "Use Path" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Open Project Folder/ })).not.toBeInTheDocument();
 
-    const input = screen.getByLabelText("Paste path");
-    fireEvent.change(input, { target: { value: "relative/project" } });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
+    // 选回默认工作区(替代原"使用路径"的 scope 变更断言)。
+    fireEvent.click(screen.getByRole("menuitem", { name: /Default workspace/ }));
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Enter an absolute folder path on this machine.",
+    await waitFor(() =>
+      expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
+        project_path: "/Users/test/.erza/workspace",
+        project_name: "workspace",
+        access_mode: "full",
+        restrict_to_workspace: false,
+      })),
     );
-    expect(onWorkspaceScopeChange).not.toHaveBeenCalled();
-
-    fireEvent.change(input, { target: { value: "/Users/test/project-alpha" } });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
-
-    expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
-      project_path: "/Users/test/project-alpha",
-      project_name: "project-alpha",
-      access_mode: "full",
-      restrict_to_workspace: false,
-    }));
-
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
-    const reopenedInput = await screen.findByLabelText("Paste path");
-    fireEvent.change(reopenedInput, { target: { value: "~/Pictures/Photos" } });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
-
-    expect(onWorkspaceScopeChange).toHaveBeenLastCalledWith(expect.objectContaining({
-      project_path: "~/Pictures/Photos",
-      project_name: "Photos",
-      access_mode: "full",
-      restrict_to_workspace: false,
-    }));
   });
 
   it("uses the native folder picker for project selection on native host", async () => {
@@ -217,10 +203,13 @@ describe("ThreadComposer", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Choose project" }));
+    // 下拉打开后点击"打开本地文件夹"菜单项,菜单在弹窗期间保持展开。
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: /Open Local Folder/ }),
+    );
 
     await waitFor(() => expect(pickFolder).toHaveBeenCalled());
-    expect(screen.queryByRole("menuitem", { name: /Default workspace/ })).not.toBeInTheDocument();
     expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
       project_path: "/Users/test/native-project",
       project_name: "native-project",
@@ -229,7 +218,53 @@ describe("ThreadComposer", () => {
     }));
   });
 
-  it("uses the web path menu when no native host picker is available", async () => {
+  it("falls back to the gateway folder picker when no native host is available", async () => {
+    const onWorkspaceScopeChange = vi.fn();
+    const defaultScope = {
+      project_path: "/Users/test/.erza/workspace",
+      project_name: "workspace",
+      access_mode: "full" as const,
+      restrict_to_workspace: false,
+    };
+    const pickerResponse = { picked: true, path: "/Users/test/gateway-project" };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pickerResponse), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        placeholder="Ask anything..."
+        variant="hero"
+        workspaceScope={defaultScope}
+        workspaceDefaultScope={defaultScope}
+        workspaceControls={{ can_change_project: true, can_use_full_access: true }}
+        onWorkspaceScopeChange={onWorkspaceScopeChange}
+        apiToken="token-123"
+      />,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: /Open Local Folder/ }),
+    );
+
+    await waitFor(() =>
+      expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
+        project_path: "/Users/test/gateway-project",
+        project_name: "gateway-project",
+        access_mode: "full",
+        restrict_to_workspace: false,
+      })),
+    );
+    const [calledUrl] = fetchMock.mock.calls[0] as [string];
+    expect(calledUrl).toContain("/api/workspaces/pick");
+  });
+
+  it("keeps the web path menu when no native host picker is available", async () => {
     const defaultScope = {
       project_path: "/Users/test/.erza/workspace",
       project_name: "workspace",
@@ -252,7 +287,8 @@ describe("ThreadComposer", () => {
     fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
 
     expect(await screen.findByRole("menuitem", { name: /Default workspace/ })).toBeInTheDocument();
-    expect(screen.getByLabelText("Paste path")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Paste path")).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Open Local Folder/ })).toBeInTheDocument();
   });
 
   it("shows turn run timer when runStartedAt is set", () => {

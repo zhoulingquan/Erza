@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { AlertTriangle, Check, ChevronDown, Folder, Hand } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Folder, FolderOpen, Hand } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { ApiError, pickWorkspaceFolder } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,7 +10,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import type {
   WorkspaceAccessMode,
   WorkspaceScopePayload,
@@ -18,7 +18,6 @@ import type {
 import { getHostApi } from "@/lib/runtime";
 import { cn } from "@/lib/utils";
 import {
-  isAbsoluteWorkspacePath,
   projectNameFromPath,
   scopeWithAccessMode,
   selectedProjectScope,
@@ -32,6 +31,7 @@ export function WorkspaceProjectPicker({
   defaultScope,
   controls,
   error,
+  apiToken,
   onChange,
 }: {
   isHero: boolean;
@@ -40,11 +40,11 @@ export function WorkspaceProjectPicker({
   defaultScope: WorkspaceScopePayload | null;
   controls: WorkspacesPayload["controls"] | null;
   error?: string | null;
+  apiToken?: string;
   onChange?: (scope: WorkspaceScopePayload) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const [pathDraft, setPathDraft] = useState("");
   const [pathError, setPathError] = useState<string | null>(null);
   const [pickingFolder, setPickingFolder] = useState(false);
   const currentProjectScope = selectedProjectScope(scope, defaultScope);
@@ -56,13 +56,11 @@ export function WorkspaceProjectPicker({
     && !!onChange
     && controls?.can_change_project !== false;
   const hostApi = getHostApi();
-  const nativeProjectPicker = !!hostApi;
 
   useEffect(() => {
     if (!open) return;
-    setPathDraft(currentProjectScope?.project_path ?? "");
     setPathError(null);
-  }, [currentProjectScope?.project_path, open]);
+  }, [open]);
 
   useEffect(() => {
     if (error && visible) setOpen(true);
@@ -71,66 +69,60 @@ export function WorkspaceProjectPicker({
   const applyProjectPath = useCallback(
     (projectPath: string, projectName?: string) => {
       const base = scope ?? defaultScope;
-      const trimmed = projectPath.trim();
       if (!base || !onChange) return;
-      if (!trimmed || !isAbsoluteWorkspacePath(trimmed)) {
-        setPathError(t("workspace.dialog.absolutePathRequired"));
-        return;
-      }
       onChange({
         ...base,
-        project_path: trimmed,
-        project_name: projectName || projectNameFromPath(trimmed),
+        project_path: projectPath,
+        project_name: projectName || projectNameFromPath(projectPath),
         restrict_to_workspace: base.access_mode === "restricted",
       });
       setPathError(null);
       setOpen(false);
     },
-    [defaultScope, onChange, scope, t],
+    [defaultScope, onChange, scope],
   );
 
-  const pickNativeFolder = useCallback(async () => {
-    if (!hostApi || disabled) return;
+  // 打开本地文件夹:优先原生壳桥(window.erzaHost),否则请求后端在宿主机弹
+  // 系统目录选择框。后端不可用(503/非本地)时提示错误。preventDefault 让菜
+  // 单在弹窗期间保持展开:取消时无需重开,失败时错误就地显示;成功则收起。
+  const pickFolder = useCallback(async () => {
+    if (disabled) return;
     setPickingFolder(true);
     try {
-      const picked = await hostApi.pickFolder();
+      let picked: string | null = null;
+      if (hostApi?.pickFolder) {
+        picked = await hostApi.pickFolder();
+      } else {
+        const payload = await pickWorkspaceFolder(
+          apiToken ?? "",
+          currentProjectScope?.project_path,
+          t("workspace.dialog.pickFolderTitle"),
+        );
+        if (!payload.picked || !payload.path) {
+          return;
+        }
+        picked = payload.path;
+      }
       if (picked) applyProjectPath(picked);
     } catch (err) {
-      setPathError((err as Error).message);
+      setPathError(
+        err instanceof ApiError && err.status === 503
+          ? t("workspace.dialog.pickUnavailable")
+          : t("workspace.dialog.pickFailed"),
+      );
     } finally {
       setPickingFolder(false);
     }
-  }, [applyProjectPath, disabled, hostApi]);
+  }, [
+    apiToken,
+    applyProjectPath,
+    currentProjectScope?.project_path,
+    disabled,
+    hostApi,
+    t,
+  ]);
 
   if (!visible || !defaultScope || !onChange) return null;
-
-  if (nativeProjectPicker) {
-    return (
-      <div className="flex items-center border-t border-border/25 bg-muted/60 px-4 py-1.5 dark:bg-white/[0.055]">
-        <button
-          type="button"
-          disabled={disabled || pickingFolder}
-          aria-label={t("thread.composer.workspace.projectAria")}
-          title={currentProjectScope?.project_path}
-          onClick={() => void pickNativeFolder()}
-          className={cn(
-            "inline-flex h-7 max-w-[18rem] items-center gap-2 rounded-full px-2.5",
-            "text-[12px] font-medium text-muted-foreground/90 transition-colors",
-            "hover:bg-background/70 hover:text-foreground disabled:pointer-events-none disabled:opacity-55",
-            currentProjectScope && "text-foreground/82",
-          )}
-        >
-          <Folder className={cn("h-3.5 w-3.5 shrink-0", currentProjectScope && "text-primary")} />
-          <span className="truncate">{projectLabel}</span>
-        </button>
-        {pathError || error ? (
-          <span role="alert" className="ml-2 truncate text-[11.5px] font-medium text-destructive">
-            {pathError ?? error}
-          </span>
-        ) : null}
-      </div>
-    );
-  }
 
   return (
     <div className="flex items-center border-t border-border/25 bg-muted/60 px-4 py-1.5 dark:bg-white/[0.055]">
@@ -177,47 +169,28 @@ export function WorkspaceProjectPicker({
             {!currentProjectScope ? <Check className="h-4 w-4 text-foreground/80" /> : null}
           </DropdownMenuItem>
           <div className="my-1 h-px bg-border/45" />
-          <div
-            className="space-y-1.5 px-1.5 py-1.5"
-            onKeyDown={(event) => {
-              if (event.key !== "Escape") event.stopPropagation();
+          <DropdownMenuItem
+            disabled={disabled || pickingFolder}
+            onSelect={(event) => {
+              event.preventDefault();
+              void pickFolder();
             }}
+            className="flex min-h-[40px] cursor-default gap-3 rounded-[12px] px-3 py-2 focus:bg-muted/55"
           >
-            <form
-              className="flex items-center gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                applyProjectPath(pathDraft);
-              }}
-            >
-              <Input
-                value={pathDraft}
-                disabled={disabled}
-                onChange={(event) => {
-                  setPathDraft(event.target.value);
-                  setPathError(null);
-                }}
-                placeholder={t("workspace.dialog.manualPlaceholder")}
-                aria-label={t("workspace.dialog.manual")}
-                className={cn(
-                  "h-9 rounded-full border-border/55 bg-background/80 px-3 text-[12.5px]",
-                  "focus-visible:ring-1 focus-visible:ring-foreground/10 focus-visible:ring-offset-0",
-                )}
-              />
-              <Button
-                type="submit"
-                disabled={disabled || !pathDraft.trim()}
-                className="h-9 shrink-0 rounded-full px-3 text-[12px]"
-              >
-                {t("workspace.dialog.usePath")}
-              </Button>
-            </form>
-            {pathError || error ? (
-              <p role="alert" className="px-1 text-[11.5px] font-medium text-destructive">
-                {pathError ?? error}
-              </p>
-            ) : null}
-          </div>
+            <span className="grid h-6 w-6 shrink-0 place-items-center text-muted-foreground">
+              <FolderOpen className="h-4 w-4" />
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-muted-foreground">
+              {pickingFolder
+                ? t("workspace.dialog.pickingFolder")
+                : t("workspace.dialog.browseFolder")}
+            </span>
+          </DropdownMenuItem>
+          {pathError || error ? (
+            <p role="alert" className="px-1 text-[11.5px] font-medium text-destructive">
+              {pathError ?? error}
+            </p>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

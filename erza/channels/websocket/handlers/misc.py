@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 
 from websockets.http11 import Response
 
 from erza.command.builtin import builtin_command_palette
 from erza.session.webui_turns import websocket_turn_wall_started_at
+from erza.webui.folder_picker import FolderPickerError, pick_workspace_folder
 from erza.webui.sidebar_state import (
     read_webui_sidebar_state,
     write_webui_sidebar_state,
@@ -18,7 +21,7 @@ from erza.webui.sidebar_state import (
 
 from .._http_router import RouteContext, router
 from .._http_routes import _http_error, _http_json_response, _query_first
-from ._common import require_auth, service_unavailable
+from ._common import forbidden, require_auth, service_unavailable
 
 
 @router.route("/api/sessions", methods={"GET"})
@@ -62,6 +65,32 @@ def list_workspaces(ctx: RouteContext) -> Response:
             controls_available=ctx.deps.is_localhost_connection(ctx.connection)
         )
     )
+
+
+@router.route("/api/workspaces/pick", methods={"GET", "POST"})
+@require_auth
+async def pick_project_folder(ctx: RouteContext) -> Response:
+    """弹出原生目录选择框,返回用户选中的项目文件夹(仅限本地连接)。
+
+    供 WebUI 主页"选择项目"下拉菜单的"浏览文件夹"按钮调用:浏览器拿不到
+    本机路径,由网关在本机弹系统对话框代选。无头环境 / tkinter 缺失时回
+    503,前端提示改用手动粘贴路径。弹窗会阻塞 worker 线程直到用户关闭。
+    """
+    if not ctx.deps.is_localhost_connection(ctx.connection):
+        return forbidden("folder picking is localhost-only")
+    start_dir = _query_first(ctx.query, "start_dir")
+    title = _query_first(ctx.query, "title")
+    try:
+        chosen = await asyncio.to_thread(pick_workspace_folder, start_dir, title)
+    except FolderPickerError as e:
+        ctx.deps.logger.warning("workspace folder picker failed: {}", e)
+        return _http_error(503, str(e))
+    if not chosen:
+        return _http_json_response({"picked": False, "path": None})
+    folder = Path(chosen).expanduser()
+    if not folder.is_absolute():
+        return _http_error(500, "picker returned a non-absolute path")
+    return _http_json_response({"picked": True, "path": str(folder)})
 
 
 @router.route("/api/webui/sidebar-state", methods={"GET"})

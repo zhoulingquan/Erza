@@ -36,6 +36,8 @@ export interface ThreadComposerProps {
   workspaceControls?: WorkspacesPayload["controls"] | null;
   workspaceScopeDisabled?: boolean;
   workspaceError?: string | null;
+  /** Bearer token for direct REST calls (e.g. opening the project folder). */
+  apiToken?: string;
   onWorkspaceScopeChange?: (scope: WorkspaceScopePayload) => void;
   /** Subagents available for ``@agent`` selection (from ``GET /api/agents``). */
   agents?: AgentInfo[];

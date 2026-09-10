@@ -682,10 +682,11 @@
   "workspace": {
     "dialog": {
       "defaultProject": "Default workspace",
-      "manual": "Paste path",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "Use Path",
-      "absolutePathRequired": "Enter an absolute folder path on this machine."
+      "browseFolder": "Open Local Folder…",
+      "pickingFolder": "Opening folder picker…",
+      "pickFolderTitle": "Select project folder",
+      "pickFailed": "Could not open the folder picker.",
+      "pickUnavailable": "This machine cannot open a folder picker."
     }
   },
   "mcp": {

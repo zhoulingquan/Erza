@@ -103,6 +103,7 @@ export function ThreadComposer({
   workspaceControls = null,
   workspaceScopeDisabled = false,
   workspaceError = null,
+  apiToken,
   onWorkspaceScopeChange,
   agents = [],
   selectedAgentId = null,
@@ -897,6 +898,7 @@ export function ThreadComposer({
           defaultScope={workspaceDefaultScope}
           controls={workspaceControls}
           error={workspaceError}
+          apiToken={apiToken}
           onChange={onWorkspaceScopeChange}
         />
       </div>

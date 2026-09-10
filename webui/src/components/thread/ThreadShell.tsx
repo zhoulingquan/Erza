@@ -646,6 +646,7 @@ export function ThreadShell({
           workspaceControls={workspaceControls}
           workspaceScopeDisabled={workspaceScopeDisabled}
           workspaceError={workspaceError}
+          apiToken={token}
           onWorkspaceScopeChange={onWorkspaceScopeChange}
           agents={agents}
           selectedAgentId={selectedAgentId}
@@ -686,6 +687,7 @@ export function ThreadShell({
           workspaceControls={workspaceControls}
           workspaceScopeDisabled={workspaceScopeDisabled}
           workspaceError={workspaceError}
+          apiToken={token}
           onWorkspaceScopeChange={onWorkspaceScopeChange}
           agents={agents}
           selectedAgentId={selectedAgentId}

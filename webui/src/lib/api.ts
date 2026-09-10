@@ -217,6 +217,23 @@ export async function fetchWorkspaces(
   return request<WorkspacesPayload>(`${base}/api/workspaces`, token);
 }
 
+/** 让后端在宿主机弹出原生目录选择框(仅本地连接可用);取消时 path 为 null。 */
+export async function pickWorkspaceFolder(
+  token: string,
+  startDir: string | undefined,
+  title: string | undefined,
+  base: string = "",
+): Promise<{ picked: boolean; path: string | null }> {
+  const query = new URLSearchParams();
+  if (startDir) query.set("start_dir", startDir);
+  if (title) query.set("title", title);
+  const qs = query.toString();
+  return request<{ picked: boolean; path: string | null }>(
+    `${base}/api/workspaces/pick${qs ? `?${qs}` : ""}`,
+    token,
+  );
+}
+
 export async function fetchMcpPresets(
   token: string,
   base: string = "",

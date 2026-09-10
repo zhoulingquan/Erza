@@ -682,10 +682,11 @@
   "workspace": {
     "dialog": {
       "defaultProject": "默认工作区",
-      "manual": "粘贴路径",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "使用路径",
-      "absolutePathRequired": "请输入这台机器上的绝对文件夹路径。"
+      "browseFolder": "打开本地文件夹…",
+      "pickingFolder": "正在打开文件夹选择器…",
+      "pickFolderTitle": "选择项目文件夹",
+      "pickFailed": "无法打开文件夹选择器。",
+      "pickUnavailable": "本机无法弹出文件夹选择器。"
     }
   },
   "mcp": {
