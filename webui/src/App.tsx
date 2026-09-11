@@ -971,7 +971,8 @@ function Shell({
             sidebarWidth={
               isNarrowViewport ? SIDEBAR_RAIL_WIDTH : SIDEBAR_WIDTH
             }
-            version={version}
+            /* 窄视口左侧仅剩 56px,放不下品牌名+版本徽章+按钮组,隐藏版本号。 */
+            version={isNarrowViewport ? null : version}
           />
         )}
         <div
