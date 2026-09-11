@@ -733,7 +733,9 @@ describe("App layout", () => {
     expect(screen.getByText("Dream")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Search timezone")).not.toBeInTheDocument();
     expect(within(settingsNav).queryByRole("button", { name: "System" })).not.toBeInTheDocument();
-  });
+    // SettingsView 是 lazy import,首次挂载需动态加载模块树;高负载下渲染可能
+    // 超过 findByRole 默认的 1s,与同文件慢用例一致显式放宽到 15s。
+  }, 15_000);
 
   it("returns from settings to the blank start page when no session was active", async () => {
     mockSessions = [
@@ -844,7 +846,8 @@ describe("App layout", () => {
 
     await waitFor(() => expect(document.title).toBe("Erza"));
     expect(screen.getByText(HERO_GREETING_PATTERN)).toBeInTheDocument();
-  });
+    // 同上:SettingsView lazy 首挂在高负载下可能超过 findByRole 默认 1s。
+  }, 15_000);
 
   it("filters sessions in the centered search dialog", async () => {
     mockSessions = [
