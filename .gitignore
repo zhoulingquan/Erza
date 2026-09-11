@@ -4,6 +4,8 @@
 .loadtest/
 .env
 .erza-config/
+.erza-gateway.out.log
+.erza-gateway.err.log
 .trae-html-share-packages/
 .workbuddy/
 arch-eval-erza-vs-aniyaa/
