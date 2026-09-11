@@ -133,7 +133,7 @@ describe("App layout", () => {
       ws_path: "/",
       expires_in: 300,
       // VersionBadge 需要非 null 版本才渲染,窄视口的隐藏断言才有对象可查。
-      version: "0.5.0",
+      version: "0.6.0",
     });
     // fetchBootstrapWithRetry delegates to fetchBootstrap by default.
     vi.mocked(fetchBootstrapWithRetry).mockReset().mockImplementation(
@@ -179,7 +179,7 @@ describe("App layout", () => {
     expect(main).not.toHaveAttribute("style");
 
     // 宽屏顶栏正常显示版本徽章(与窄视口隐藏行为互为对照)。
-    expect(screen.getByText("v0.5.0")).toBeInTheDocument();
+    expect(screen.getByText("v0.6.0")).toBeInTheDocument();
 
     // 侧边栏常驻渲染(窄视口收缩为图标栏),不参与 main 宽度契约
     const hostAside = container.querySelector("aside") as HTMLElement;
@@ -269,7 +269,7 @@ describe("App layout", () => {
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
     // 窄视口左侧只有 56px 图标栏,品牌区放不下版本徽章,必须隐藏
     // (否则徽章与 PanelLeft/搜索按钮重叠)。
-    expect(screen.queryByText("v0.5.0")).not.toBeInTheDocument();
+    expect(screen.queryByText("v0.6.0")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
 
     const sheet = await screen.findByRole("dialog");
