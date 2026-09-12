@@ -16,10 +16,37 @@ import tiktoken
 from loguru import logger
 
 
+def fsync_parent_dir(path: Path) -> bool:
+    """Best-effort fsync of *path*'s parent directory so a rename is durable.
+
+    A file-level ``fsync`` only guarantees the *contents*; the directory entry
+    created by ``os.replace`` lives in the directory and needs its own sync on
+    POSIX filesystems.  Windows cannot open a directory with ``O_RDONLY``
+    (``PermissionError``) and NTFS journals metadata synchronously, so the
+    failure is swallowed there.
+
+    Returns True when the directory was synced, False otherwise.
+    """
+    try:
+        fd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        os.fsync(fd)
+        return True
+    except OSError:
+        return False
+    finally:
+        with suppress(OSError):
+            os.close(fd)
+
+
 def atomic_rewrite_lines(path: Path, lines: list[str]) -> bool:
     """Rewrite a text file with a unique sibling temp, fsync, and atomic replace.
 
-    Returns True only when the canonical file was durably replaced.
+    Returns True only when the canonical file was durably replaced.  The parent
+    directory is fsynced after the replace so the rename itself survives a
+    crash (on platforms where that is possible).
     """
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -28,6 +55,7 @@ def atomic_rewrite_lines(path: Path, lines: list[str]) -> bool:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
+        fsync_parent_dir(path)
         return True
     except Exception:
         logger.exception("Atomic rewrite failed for {}", path)

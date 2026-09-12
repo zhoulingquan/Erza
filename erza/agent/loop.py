@@ -39,6 +39,7 @@ from erza.agent.turn_orchestrator import (
     TurnOrchestrator,
     TurnState,
 )
+from erza.agent.turn_overrides import current_model_override, current_provider_override
 from erza.bus.events import InboundMessage, OutboundMessage
 from erza.bus.queue import MessageBus
 from erza.command import (
@@ -227,6 +228,9 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
 
     @property
     def provider(self) -> LLMProvider:
+        override = current_provider_override()
+        if override is not None:
+            return override
         registry = self.__dict__.get("_provider_registry")
         if registry is not None:
             return registry.provider
@@ -242,6 +246,9 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
 
     @property
     def model(self) -> str:
+        override = current_model_override()
+        if override is not None:
+            return override
         registry = self.__dict__.get("_provider_registry")
         if registry is not None:
             return registry.model
@@ -468,6 +475,11 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
         self.reflection_interval = cfg.reflection_interval
         self._max_input_tokens_per_turn = cfg.max_input_tokens_per_turn
         self._max_cost_per_turn_usd = cfg.max_cost_per_turn_usd
+        # P1-T7 / T5:这两个开关过去只存在于 AgentLoopConfig,既没保存到实例,
+        # 也没传给 AgentRunSpec,导致"配置了完全不生效"(墙钟超时永不触发、
+        # LLM 步骤验收器永不启用)。
+        self._max_turn_wall_time_s = cfg.max_turn_wall_time_s
+        self.enable_step_verifier = cfg.enable_step_verifier
         self.tools_config = _tc
         self.web_config = _tc.web
         self.exec_config = _tc.exec
@@ -1302,6 +1314,10 @@ class AgentLoop(StateMixin, ProviderSwitchingMixin, McpLifecycleMixin):
             enable_reflection=self.enable_reflection,
             reflection_interval=self.reflection_interval,
             turn_budget=self._build_turn_budget(),
+            # P1-T7: 单轮墙钟超时上限(0/None 表示不限制)。
+            max_turn_wall_time_s=getattr(self, "_max_turn_wall_time_s", None),
+            # T5: 规则不确定时允许 LLM 复核步骤验收。
+            enable_step_verifier=getattr(self, "enable_step_verifier", False),
         )
 
     async def _record_turn_outcome(self, result, on_stream, on_stream_end) -> None:

@@ -73,7 +73,7 @@ class RouteDeps:
     with_restart_state: "Callable[[dict, str | None], dict]"
     refresh_agent_model: "Callable[[], None]"
     reload_cron: "Callable[[], None]"
-    reload_mcp: "Callable[[], None]"
+    reload_mcp: "Callable[[], Awaitable[dict[str, Any]]]"
     # rewind handler 触发:通知连接的 WS 客户端刷新会话视图(fire-and-forget)。
     notify_session_updated: "Callable[[str], None]"
     # bootstrap-file save 后清除 ContextBuilder 缓存(best-effort,mtime 兜底)。

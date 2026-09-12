@@ -897,9 +897,19 @@ class ExecTool(Tool):
             r"(?<![A-Za-z])(?:[A-Za-z]:[^\s\"'|><;]*|\\\\[^\s\"'|><;]+(?:\\[^\s\"'|><;]+)*)",
             command,
         )
+        # POSIX: /absolute only.  The leading-context set must cover every shell
+        # metacharacter that can abut a path, not just whitespace/quotes/`|`/`>`:
+        # `cat </etc/passwd`, `dd if=/etc/passwd`, `grep --file=/etc/passwd` and
+        # `$(/etc/x)` all hide the path behind `<`, `=`, `(`, `;`, `&` or a
+        # backtick.  Missing them meant the path was never extracted and the
+        # workspace-containment check was silently skipped (mirrors
+        # ``_TRAVERSAL_TOKEN_RE``'s leading set).
         posix_paths = re.findall(
-            r"(?:^|[\s|>'\"])(/[^\s\"'>;|<]+)", command
-        )  # POSIX: /absolute only
+            r"(?:^|[\s\"'=;|&()\\<>`])(/[^\s\"'>;|<`]+)", command
+        )
+        # ``~`` keeps its original, narrower leading context on purpose: ``=~``
+        # is bash's regex operator and ``|~`` is jq's, so broadening it would
+        # misread those as home paths.
         home_paths = re.findall(
             r"(?:^|[\s>'\"])(~[^\s\"'>;|<]*)", command
         )  # POSIX/Windows home shortcut: ~

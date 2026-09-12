@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
+from loguru import logger
+
 from erza.config.loader import load_config, resolve_config_env_vars, save_config
 from erza.config.paths import get_runtime_subdir
 from erza.config.schema import MCPServerConfig
@@ -50,6 +52,10 @@ _DEFAULT_CUSTOM_TIMEOUT = 30
 _CUSTOM_ACTIONS = {"custom", "import", "import-cursor", "tools"}
 
 McpReload = Callable[[], Awaitable[dict[str, Any]]]
+
+# 持有后台热重载任务的强引用:asyncio 只对 task 持弱引用,不保存引用的话
+# 任务可能在完成前被 GC 回收(done_callback 里做自清理)。
+_background_reload_tasks: set[asyncio.Task[None]] = set()
 
 
 class McpPresetError(Exception):
@@ -1331,11 +1337,15 @@ async def mcp_presets_settings_action(
         # can take 15s+ when MCP servers fail to connect, causing the
         # websockets HTTP server to drop the connection before the
         # response is sent.
-        asyncio.create_task(_background_reload(reload_mcp))
+        task = asyncio.create_task(_background_reload(reload_mcp))
+        _background_reload_tasks.add(task)
+        task.add_done_callback(_background_reload_tasks.discard)
     return payload
 
 
 async def _background_reload(reload_mcp: McpReload) -> None:
-    """Run MCP hot-reload in the background, swallowing errors."""
-    with suppress(Exception):
+    """Run MCP hot-reload in the background, logging (not swallowing) errors."""
+    try:
         await reload_mcp()
+    except Exception:
+        logger.exception("Background MCP hot-reload failed")

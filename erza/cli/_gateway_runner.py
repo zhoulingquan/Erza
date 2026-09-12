@@ -29,6 +29,7 @@ from typing import Any
 
 from loguru import logger
 
+from erza.agent.turn_overrides import turn_runtime_overrides
 from erza.bus.events import OutboundMessage
 from erza.cli._heartbeat import (
     _HEARTBEAT_LIGHT_PREAMBLE,
@@ -146,29 +147,28 @@ async def _handle_heartbeat_job(
     else:
         session_key = "heartbeat"
 
-    # 若配置了 heartbeat 专用 model_preset,临时切换 agent 的 provider/model,
-    # 调用结束后在 finally 中恢复,避免影响主对话。
+    # 若配置了 heartbeat 专用 model_preset,本轮心跳临时切换到该 provider/model。
+    # 通过 turn_runtime_overrides 以 ContextVar 作用域绑定,仅影响本次心跳任务
+    # (及其派生子任务),不修改 agent 的共享属性,因此不会与并发的用户回合竞态。
     hb_override = _build_heartbeat_provider(hb_cfg, config)
-    orig_provider = agent.provider
-    orig_model = agent.model
-    orig_runner_provider = agent.runner.provider
-    orig_generation = getattr(agent.runner.provider, "generation", None)
+    hb_provider = None
+    hb_model = None
     if hb_override is not None:
         hb_provider, hb_model = hb_override
         # 继承主 provider 的 generation 设置(temperature/max_tokens 等)
+        orig_generation = getattr(agent.runner.provider, "generation", None)
         if orig_generation is not None:
             hb_provider.generation = orig_generation
-        agent.provider = hb_provider
-        agent.model = hb_model
-        agent.runner.provider = hb_provider
-    # lightContext:跳过 bootstrap 文件注入,省 token(由 build_messages 读取)
-    orig_light_context = getattr(agent, "_light_context", False)
-    agent._light_context = hb_cfg.light_context
-    try:
 
-        async def _silent(*_args, **_kwargs):
-            pass
+    async def _silent(*_args, **_kwargs):
+        pass
 
+    # lightContext:跳过 bootstrap 文件注入,省 token(由 build_messages 读取)。
+    with turn_runtime_overrides(
+        provider=hb_provider,
+        model=hb_model,
+        light_context=hb_cfg.light_context,
+    ):
         resp = await agent.process_direct(
             prompt,
             session_key=session_key,
@@ -176,11 +176,6 @@ async def _handle_heartbeat_job(
             chat_id=chat_id,
             on_progress=_silent,
         )
-    finally:
-        agent.provider = orig_provider
-        agent.model = orig_model
-        agent.runner.provider = orig_runner_provider
-        agent._light_context = orig_light_context
     response = resp.content if resp else ""
 
     # Keep a small tail of heartbeat history so the loop stays bounded.

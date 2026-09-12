@@ -1914,8 +1914,23 @@ class FeishuChannel(BaseChannel):
         """
         if not self._running:
             return
-        if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._on_message(data), self._loop)
+        loop = self._loop
+        if loop is not None and not loop.is_closed() and loop.is_running():
+            # 保存 future 并挂 done 回调:否则 future 无引用会被 GC,协程内部
+            # 抛出的异常只会以 "exception was never retrieved" 的形式丢失,
+            # 且 loop 关闭后提交会抛 RuntimeError 到 SDK 线程。
+            with suppress(RuntimeError):
+                future = asyncio.run_coroutine_threadsafe(self._on_message(data), loop)
+                future.add_done_callback(self._log_background_future_result)
+
+    def _log_background_future_result(self, future: Any) -> None:
+        """Retrieve and log the result of a cross-thread coroutine submission."""
+        if future.cancelled():
+            return
+        with suppress(Exception):
+            error = future.exception()
+            if error is not None:
+                self.logger.error("Error handling Feishu message: {}", error)
 
     async def _on_message(self, data: P2ImMessageReceiveV1) -> None:
         """Handle incoming message from Feishu."""

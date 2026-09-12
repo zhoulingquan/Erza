@@ -150,8 +150,16 @@ def _restrict_permissions(path: Path) -> None:
     chmod(0o600) 将读写权限限制为属主;Windows 下 os.chmod(0o600) 仅体现为
     清除只读属性(无安全含义,但保证后续 os.replace 不被阻塞),真正的访问
     控制由用户配置目录 %USERPROFILE% 的默认 ACL 负责。
+
+    Best-effort: a chmod failure (e.g. a filesystem that does not support
+    POSIX modes, or the file being replaced concurrently) must not make a
+    config save that already succeeded report "save failed" — the caller would
+    otherwise believe nothing was written while the new config is live.
     """
-    os.chmod(path, 0o600)
+    try:
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.warning("Could not restrict permissions on {}: {}", path, exc)
 
 
 def save_config(config: Config, config_path: Path | None = None) -> None:

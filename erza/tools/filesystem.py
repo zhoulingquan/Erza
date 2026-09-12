@@ -33,10 +33,17 @@ class _FsTool(Tool):
         file_states: FileStates | None = None,
         restrict_to_workspace: bool | None = None,
         sandbox_restricts_workspace: bool = False,
+        extra_read_only_dirs: list[Path] | None = None,
     ):
         self._workspace = workspace
         self._allowed_dir = allowed_dir
         self._extra_allowed_dirs = extra_allowed_dirs
+        # Directories that may be *read* but never written.  Read-only content
+        # (e.g. the bundled skills source tree) must not be folded into
+        # ``extra_allowed_dirs``: that list feeds the containment check on the
+        # write path too, so a restricted agent could otherwise overwrite the
+        # skill implementations for persistence.
+        self._extra_read_only_dirs = extra_read_only_dirs
         self._restrict_to_workspace = (
             bool(restrict_to_workspace)
             if restrict_to_workspace is not None
@@ -49,6 +56,14 @@ class _FsTool(Tool):
         self._explicit_file_states = file_states
         self._fallback_file_states = FileStates()
 
+    def _read_roots(self) -> list[Path]:
+        """Extra roots allowed for reads: read-only dirs + writable extras."""
+        return [*(self._extra_read_only_dirs or []), *(self._extra_allowed_dirs or [])]
+
+    def _write_roots(self) -> list[Path]:
+        """Extra roots allowed for writes (read-only dirs excluded)."""
+        return list(self._extra_allowed_dirs or [])
+
     @classmethod
     def create(cls, ctx: Any) -> Tool:
         from erza.agent.skills import BUILTIN_SKILLS_DIR
@@ -60,7 +75,7 @@ class _FsTool(Tool):
         return cls(
             workspace=Path(ctx.workspace),
             allowed_dir=allowed_dir,
-            extra_allowed_dirs=extra_read,
+            extra_read_only_dirs=extra_read,
             file_states=ctx.file_state_store,
             restrict_to_workspace=ctx.config.restrict_to_workspace,
             sandbox_restricts_workspace=sandbox_restricts,
@@ -72,7 +87,7 @@ class _FsTool(Tool):
             return self._explicit_file_states
         return current_file_states(self._fallback_file_states)
 
-    def _resolve(self, path: str) -> Path:
+    def _resolve(self, path: str, *, for_write: bool = False) -> Path:
         access = current_tool_workspace(
             self._workspace,
             restrict_to_workspace=self._restrict_to_workspace,
@@ -82,7 +97,7 @@ class _FsTool(Tool):
             path,
             access.project_path,
             access.allowed_root,
-            self._extra_allowed_dirs,
+            self._write_roots() if for_write else self._read_roots(),
         )
 
     def _verify_within(self, fp: Path) -> None:
@@ -95,7 +110,7 @@ class _FsTool(Tool):
         verify_workspace_path(
             fp,
             access.allowed_root,
-            self._extra_allowed_dirs,
+            self._write_roots(),
         )
 
     def _display_workspace(self) -> Path | None:
@@ -484,7 +499,7 @@ class WriteFileTool(_FsTool):
                 raise ValueError("Unknown path")
             if content is None:
                 raise ValueError("Unknown content")
-            fp = self._resolve(path)
+            fp = self._resolve(path, for_write=True)
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
             self._verify_within(fp)
@@ -870,7 +885,7 @@ class EditFileTool(_FsTool):
             if expected_replacements is not None and expected_replacements < 1:
                 return "Error: expected_replacements must be >= 1."
 
-            fp = self._resolve(path)
+            fp = self._resolve(path, for_write=True)
 
             # Create-file semantics: old_text='' + file doesn't exist → create
             if not fp.exists():

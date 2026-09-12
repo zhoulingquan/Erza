@@ -295,6 +295,12 @@ class ApplyPatchTool(_FsTool):
                 for path, content in writes.items():
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(content, encoding="utf-8", newline="")
+                # Post-write containment re-check: ``_resolve`` validated the
+                # path earlier, but a symlink swapped in between the check and
+                # the write would otherwise slip past (same TOCTOU guard
+                # ``write_file`` / ``edit_file`` already apply).
+                for path in writes:
+                    self._verify_within(path)
             except Exception:
                 for path, data in backups.items():
                     if data is None:

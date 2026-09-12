@@ -271,13 +271,22 @@ class ChannelManager:
             logger.exception("Failed to start channel {}", name)
 
     async def start_all(self) -> None:
-        """Start all channels and the outbound dispatcher."""
+        """Start all channels and the outbound dispatcher.
+
+        Idempotent with respect to the dispatcher: calling twice without an
+        intervening ``stop_all`` must not orphan the first dispatch task (the
+        old task would keep consuming the bus with no reference held, and
+        ``stop_all`` would only cancel the newest one).
+        """
         if not self.channels:
             logger.warning("No channels enabled")
             return
 
-        # Start outbound dispatcher
-        self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
+        # Start outbound dispatcher (only once)
+        if self._dispatch_task is None or self._dispatch_task.done():
+            self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
+        else:
+            logger.debug("Outbound dispatcher already running; not starting a second one")
 
         # Start channels
         tasks = []
@@ -327,6 +336,7 @@ class ChannelManager:
             self._dispatch_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._dispatch_task
+            self._dispatch_task = None
 
         # 取消仍存活的后台发送任务 (restart 通知等 fire-and-forget 任务)。
         for task in list(self._background_tasks):
@@ -486,7 +496,15 @@ class ChannelManager:
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
-                break
+                # Propagate cancellation instead of swallowing it. Returning
+                # normally would leave ``task.cancelled()`` False and mask the
+                # shutdown request from ``stop_all``/``TaskGroup`` callers.
+                if pending:
+                    logger.debug(
+                        "Outbound dispatcher cancelled with {} buffered message(s) undelivered",
+                        len(pending),
+                    )
+                raise
 
     @staticmethod
     async def _send_once(channel: BaseChannel, msg: OutboundMessage) -> None:
@@ -558,13 +576,21 @@ class ChannelManager:
     async def _send_with_retry(self, channel: BaseChannel, msg: OutboundMessage) -> None:
         """Send a message with retry on failure using exponential backoff.
 
+        Each attempt is bounded by ``config.channels.send_timeout_s`` (0
+        disables).  The outbound dispatcher is a single task shared by *all*
+        channels, so a channel whose ``send`` never returns — e.g. a websocket
+        client that stops reading and lets the TCP send buffer fill — would
+        otherwise freeze delivery for every other channel.  A timed-out attempt
+        is treated like any other send failure and retried.
+
         Note: CancelledError is re-raised to allow graceful shutdown.
         """
         max_attempts = max(self.config.channels.send_max_retries, 1)
+        send_timeout = getattr(self.config.channels, "send_timeout_s", 0) or 0
 
         for attempt in range(max_attempts):
             try:
-                await self._send_once(channel, msg)
+                await self._send_once_timed(channel, msg, send_timeout)
                 return  # Send succeeded
             except asyncio.CancelledError:
                 raise  # Propagate cancellation for graceful shutdown
@@ -587,6 +613,32 @@ class ChannelManager:
                     await asyncio.sleep(delay)
                 except asyncio.CancelledError:
                     raise  # Propagate cancellation during sleep
+
+    @classmethod
+    async def _send_once_timed(
+        cls,
+        channel: BaseChannel,
+        msg: OutboundMessage,
+        timeout_s: float,
+    ) -> None:
+        """Run :meth:`_send_once` under an optional wall-clock timeout.
+
+        ``timeout_s <= 0`` disables the bound (legacy behaviour).
+        """
+        if timeout_s <= 0:
+            await cls._send_once(channel, msg)
+            return
+        try:
+            await asyncio.wait_for(cls._send_once(channel, msg), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Send to {}:{} timed out after {}s (channel={}); treating as failure",
+                channel.__class__.__name__,
+                msg.chat_id,
+                timeout_s,
+                msg.channel,
+            )
+            raise
 
     def get_channel(self, name: str) -> BaseChannel | None:
         """Get a channel by name."""

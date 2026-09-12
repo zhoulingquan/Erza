@@ -14,6 +14,7 @@ from erza.agent.persist_tags import RUNTIME_CONTEXT_TAG
 from erza.agent.runtime_view import RuntimeStateView
 from erza.agent.skills import SkillsLoader
 from erza.agent.subagent_registry import SubagentDefinition
+from erza.agent.turn_overrides import current_light_context
 from erza.bus.events import InboundMessage
 from erza.config.schema import StructuredMemoryConfig
 from erza.memory import MemoryStore, WorkspaceMemoryRegistry
@@ -580,8 +581,10 @@ class ContextBuilder:
         user_content = self._build_user_content(current_message, media)
         store = self.memory_for(root)
 
-        # light_context 从 runtime_state 读取(由 AgentLoop 设置,用于心跳等轻量场景)
-        light_context = (
+        # light_context:优先取 per-turn 覆盖(心跳等后台回合通过
+        # turn_runtime_overrides 绑定,不污染共享状态),否则回退到
+        # runtime_state 上的静态属性。
+        light_context = current_light_context(
             bool(getattr(runtime_state, "_light_context", False)) if runtime_state else False
         )
         # Structured recall is keyed on the current user

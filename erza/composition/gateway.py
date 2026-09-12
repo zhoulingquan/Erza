@@ -4,8 +4,9 @@ Static composition root for the gateway runtime (``cli gateway``,
 ``cli desktop-gateway``).  The ``GatewayApplication`` class owns the full
 object-creation and wiring that used to live inline in
 ``cli/_gateway_runner.py::_run_gateway`` (lines 353-691 of the pre-split
-module), preserving the exact creation order and the exact reverse-order
-shutdown sequence of the original cleanup code.
+module), preserving the exact creation order.  Shutdown stops every producer
+(cron, agent loop, channels) before tearing MCP down, so no job can reach an
+already-closed MCP connection.
 
 All heavyweight collaborators are resolved at call time (inside
 ``__init__``) so that test patches on their own modules
@@ -30,6 +31,16 @@ from erza.cli._terminal_render import console
 from erza.config.paths import is_default_workspace
 from erza.config.schema import Config
 from erza.cron.types import CronJob, CronPayload, CronSchedule
+
+
+def _log_task_failure(task: asyncio.Task) -> None:
+    """Retrieve a background task's exception so asyncio does not swallow it."""
+    if task.cancelled():
+        return
+    with suppress(Exception):
+        error = task.exception()
+        if error is not None:
+            logger.error("Background task {} failed: {}", task.get_name(), error)
 
 
 class GatewayApplication:
@@ -70,6 +81,9 @@ class GatewayApplication:
 
         self.config = config
         self._open_browser_url = open_browser_url
+        # Fire-and-forget tasks (dream catch-up, …) held so they are not GC'd
+        # and so shutdown can cancel + await them.
+        self._background_tasks: set[asyncio.Task] = set()
 
         ws_cfg = getattr(config.channels, "websocket", None)
         if isinstance(ws_cfg, dict):
@@ -397,18 +411,30 @@ class GatewayApplication:
         asyncio.run(self._run())
 
     async def _run(self) -> None:
+        tasks: list[asyncio.Task] = []
         try:
             await self.cron.start()
             # 启动时积压触发的 dream：此时已有 running loop，可安全调度后台任务。
+            # 持有引用并回收 done 回调,否则任务可能被 GC,异常只留下一句
+            # "Task exception was never retrieved"。
             if self._need_dream_catchup:
-                asyncio.create_task(self.agent.run_all_dreams())
+                self._spawn_background(self.agent.run_all_dreams(), name="dream-catchup")
             tasks = [
-                self.agent.run(),
-                self.channels.start_all(),
+                asyncio.create_task(self.agent.run(), name="agent"),
+                asyncio.create_task(self.channels.start_all(), name="channels"),
             ]
             if self._open_browser_url:
-                tasks.append(self._open_browser_when_ready())
-            await asyncio.gather(*tasks)
+                tasks.append(
+                    asyncio.create_task(self._open_browser_when_ready(), name="open-browser")
+                )
+            # return_exceptions=True: 一个任务失败不应让其余任务变成
+            # "never retrieved" 的孤儿,也不该丢掉其它任务的异常信息。
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for task, result in zip(tasks, results):
+                if isinstance(result, BaseException) and not isinstance(
+                    result, asyncio.CancelledError
+                ):
+                    logger.error("Gateway task {} failed: {}", task.get_name(), result)
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         except Exception:
@@ -417,7 +443,23 @@ class GatewayApplication:
             console.print("\n[red]Error: Gateway crashed unexpectedly[/red]")
             console.print(traceback.format_exc())
         finally:
+            # 取消并 await 仍未结束的兄弟任务,避免 "Task was destroyed but it
+            # is pending" 与泄漏的协程。
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                with suppress(asyncio.CancelledError, Exception):
+                    await asyncio.gather(*tasks, return_exceptions=True)
             await self.stop()
+
+    def _spawn_background(self, coro: Any, *, name: str) -> asyncio.Task:
+        """Track a fire-and-forget task so it is not GC'd and errors are logged."""
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(_log_task_failure)
+        return task
 
     async def stop(self) -> None:
         """Shut the gateway down.
@@ -427,15 +469,29 @@ class GatewayApplication:
         run even if ``channels.stop_all()`` or ``agent.close_mcp()`` raised
         (including CancelledError during shutdown). The first captured
         exception is re-raised at the end so cancellation semantics are
-        preserved. Order is kept exactly as the legacy ``_run_gateway``
-        cleanup (do not "optimise" it).
+        preserved.
+
+        Ordering: producers must be stopped **before** MCP is torn down.
+        ``close_mcp`` used to run first, which left the window where a cron job
+        could pick up an already-closed MCP connection. So cron and the
+        channels/agent loop stop first, and MCP is closed last (right before the
+        session flush).
         """
         pending_exc: BaseException | None = None
-        try:
-            await self.agent.close_mcp()
-        except BaseException as exc:  # noqa: BLE001 — re-raised later
-            pending_exc = exc
-            logger.warning("Error during agent.close_mcp() shutdown: {}", exc)
+
+        def _capture(exc: BaseException, label: str) -> None:
+            nonlocal pending_exc
+            if pending_exc is None:
+                pending_exc = exc
+            logger.warning("Error during {} shutdown: {}", label, exc)
+
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            with suppress(asyncio.CancelledError, Exception):
+                await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
+
         try:
             self.cron.stop()
             # Await cancellation of in-flight cron jobs so their state
@@ -446,27 +502,25 @@ class GatewayApplication:
             except Exception as exc:
                 logger.warning("Error during cron.await_stop(): {}", exc)
         except BaseException as exc:  # noqa: BLE001 — re-raised later
-            if pending_exc is None:
-                pending_exc = exc
-            logger.warning("Error during cron.stop(): {}", exc)
+            _capture(exc, "cron.stop()")
         try:
             self.agent.stop()
         except BaseException as exc:  # noqa: BLE001 — re-raised later
-            if pending_exc is None:
-                pending_exc = exc
-            logger.warning("Error during agent.stop(): {}", exc)
-        try:
-            await self.agent._resources.shutdown()
-        except BaseException as exc:  # noqa: BLE001 — re-raised later
-            if pending_exc is None:
-                pending_exc = exc
-            logger.warning("Error during agent._resources.shutdown(): {}", exc)
+            _capture(exc, "agent.stop()")
         try:
             await self.channels.stop_all()
         except BaseException as exc:  # noqa: BLE001 — re-raised later
-            if pending_exc is None:
-                pending_exc = exc
-            logger.warning("Error during channels.stop_all(): {}", exc)
+            _capture(exc, "channels.stop_all()")
+        try:
+            await self.agent._resources.shutdown()
+        except BaseException as exc:  # noqa: BLE001 — re-raised later
+            _capture(exc, "agent._resources.shutdown()")
+        # MCP last: nothing can reach it once cron, the agent loop and the
+        # channels have all stopped.
+        try:
+            await self.agent.close_mcp()
+        except BaseException as exc:  # noqa: BLE001 — re-raised later
+            _capture(exc, "agent.close_mcp()")
         # Flush all cached sessions to durable storage before exit.
         # This prevents data loss on filesystems with write-back
         # caching (rclone VFS, NFS, FUSE mounts, etc.).
@@ -475,9 +529,7 @@ class GatewayApplication:
             if flushed:
                 logger.info("Shutdown: flushed {} session(s) to disk", flushed)
         except BaseException as exc:  # noqa: BLE001 — re-raised later
-            if pending_exc is None:
-                pending_exc = exc
-            logger.warning("Error during sessions.flush_all(): {}", exc)
+            _capture(exc, "sessions.flush_all()")
         # Re-raise the first captured exception (typically CancelledError
         # during shutdown) so the caller's asyncio.run sees the cancellation.
         if pending_exc is not None:

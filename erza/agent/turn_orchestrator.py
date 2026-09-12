@@ -469,7 +469,20 @@ class TurnOrchestrator:
         if ctx.final_content is None or not ctx.final_content.strip():
             ctx.final_content = EMPTY_FINAL_RESPONSE_MESSAGE
 
-        ctx.save_skip = 1 + len(ctx.history) + (1 if ctx.user_persisted_early else 0)
+        # ``save_skip`` 是 ``all_messages`` 中"已存在于会话 / 无需再落盘"的前缀长度。
+        #
+        # 前缀 = 1(system) + len(history) + (当前用户消息是否为独立元素)。
+        # 注意 ``ContextBuilder.build_messages`` 在 history 末条与当前用户消息
+        # 同角色时会把两者**合并进同一元素**（见 context.py 的 merge 分支），
+        # 此时并不会新增元素 —— 过去固定加 1 会让 ``messages[skip:]`` 多跳过一条，
+        # 把本轮助手回复整段丢掉（会话历史末尾为 user 时尤甚）。
+        # 这里用实际长度反推是否发生了追加，避免依赖脆弱的长度假设。
+        base = 1 + len(ctx.history)
+        appended = len(ctx.initial_messages) - base
+        if ctx.user_persisted_early and appended == 1:
+            ctx.save_skip = base + 1
+        else:
+            ctx.save_skip = base
 
         ctx.turn_latency_ms = max(0, int((time.time() - ctx.turn_wall_started_at) * 1000))
         self._deps.session_turn._save_turn(

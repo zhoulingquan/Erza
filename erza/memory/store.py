@@ -23,6 +23,7 @@ from erza.utils.gitstore import GOVERNED_MEMORY_TRACKED_FILES, GitStore
 from erza.utils.helpers import (
     atomic_rewrite_lines,
     ensure_dir,
+    fsync_parent_dir,
     strip_think,
     truncate_text,
 )
@@ -86,6 +87,12 @@ class MemoryStore:
         self.recall_audit_file = self.memory_dir / "structured" / "recall-audit.jsonl"
         self.recall_audit_lock_file = self.memory_dir / "structured" / "recall-audit.lock"
         self.history_file = self.memory_dir / "history.jsonl"
+        # Cross-process lock guarding the history read-modify-write
+        # (``_next_cursor`` -> append -> write cursor).  ``MemoryStore`` is
+        # shared per workspace while the Consolidator's own lock is per session,
+        # so two sessions archiving concurrently would otherwise hand out the
+        # same cursor and truncate each other's half-written lines.
+        self.history_lock_file = self.memory_dir / ".history.lock"
         self.soul_file = workspace / "SOUL.md"
         # notes.md: 主 Agent 唯一被允许的持久化写入通道（借鉴 MiMo Code）。
         # 主 Agent 用 write_file/edit_file 往这里 append 零散发现，Consolidator
@@ -161,11 +168,12 @@ class MemoryStore:
             if target.exists():
                 continue
             ensure_dir(target.parent)
-            with (
-                self._bundled_template_path(name).open("r", encoding="utf-8") as source,
-                target.open("w", encoding="utf-8", newline="\n") as dest,
-            ):
-                dest.write(source.read())
+            text = self._bundled_template_path(name).read_text(encoding="utf-8")
+            # Atomic install: a crash mid-copy used to leave a truncated
+            # tags.json/POLICY.md behind, and the truncated file then counts as
+            # "exists" so it is never repaired.
+            if not atomic_rewrite_lines(target, [text]):
+                raise OSError(f"failed to install bundled memory template {name} -> {target}")
 
     def _build_structured_stack(self) -> StructuredMemoryRepository:
         """Construct the repository -> lifecycle -> recall stack.
@@ -574,7 +582,11 @@ class MemoryStore:
     def write_soul(self, content: str) -> None:
         self._assert_path_in_workspace(self.soul_file)
         self._assert_writer_allowed("memory_store", "SOUL.md")
-        self.soul_file.write_text(content, encoding="utf-8")
+        # Atomic rewrite: SOUL.md is re-read on every prompt build, so a
+        # truncated file (crash / disk-full mid-write) would poison the agent's
+        # identity until someone noticed.
+        if not atomic_rewrite_lines(self.soul_file, [content]):
+            raise OSError(f"failed to write {self.soul_file}")
         self._invalidate_cache(self.soul_file)
 
     # -- notes.md (主 Agent scratchpad，借鉴 MiMo Code) ---------------------
@@ -620,7 +632,10 @@ class MemoryStore:
         self._assert_path_in_workspace(self.notes_file)
         self._assert_writer_allowed("consolidator", "notes.md")
         try:
-            self.notes_file.write_text("", encoding="utf-8")
+            # Atomic truncation: a partial write here would surface as a
+            # half-cleared scratchpad that the agent keeps re-reading.
+            if not atomic_rewrite_lines(self.notes_file, []):
+                raise OSError(f"failed to clear {self.notes_file}")
             self._invalidate_cache(self.notes_file)
         except OSError:
             logger.exception("clear_notes failed")
@@ -649,9 +664,14 @@ class MemoryStore:
         applied as a final safety net: individual callers should cap their own
         content more tightly; this default only exists to catch unintentional
         large writes (e.g. an LLM echoing its input back as a "summary").
+
+        The whole read-modify-write (read cursor -> append -> persist cursor)
+        runs under a cross-process ``FileLock``: ``MemoryStore`` is shared per
+        workspace, and concurrent archiving from different sessions would
+        otherwise issue duplicate cursors (silently dropped as malformed by
+        ``_read_entries``, i.e. permanently lost history).
         """
         limit = max_chars if max_chars is not None else _HISTORY_ENTRY_HARD_CAP
-        cursor = self._next_cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         raw = entry.rstrip()
         if len(raw) > limit:
@@ -666,26 +686,47 @@ class MemoryStore:
                 )
             raw = truncate_text(raw, limit)
         content = strip_think(raw)
-        if raw and not content:
-            logger.debug(
-                "history entry {} stripped to empty (likely template leak); "
-                "persisting empty content to avoid re-polluting context",
-                cursor,
-            )
-        record = {"cursor": cursor, "timestamp": ts, "content": content}
-        if session_key:
-            record["session_key"] = session_key
-        if user_key:
-            record["user_key"] = user_key
         # Single-Writer 路径校验
         self._assert_path_in_workspace(self.history_file)
         self._assert_path_in_workspace(self._cursor_file)
+        self._assert_path_in_workspace(self.history_lock_file)
         self._assert_writer_allowed("consolidator", "memory/history.jsonl")
         self._assert_writer_allowed("consolidator", "memory/.cursor")
-        with open(self.history_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        self._cursor_file.write_text(str(cursor), encoding="utf-8")
+        lock_timeout = self.structured_config.lock_timeout_s
+        with FileLock(str(self.history_lock_file), timeout=lock_timeout):
+            cursor = self._next_cursor()
+            if raw and not content:
+                logger.debug(
+                    "history entry {} stripped to empty (likely template leak); "
+                    "persisting empty content to avoid re-polluting context",
+                    cursor,
+                )
+            record = {"cursor": cursor, "timestamp": ts, "content": content}
+            if session_key:
+                record["session_key"] = session_key
+            if user_key:
+                record["user_key"] = user_key
+            with open(self.history_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            self._write_cursor_atomic(cursor)
         return cursor
+
+    def _write_cursor_atomic(self, cursor: int) -> None:
+        """Persist the cursor counter atomically (temp + fsync + replace)."""
+        tmp = self._cursor_file.with_name(f".{self._cursor_file.name}.{os.getpid()}.tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(str(cursor))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._cursor_file)
+            fsync_parent_dir(self._cursor_file)
+        except Exception:
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _valid_cursor(value: Any) -> int | None:
@@ -787,18 +828,9 @@ class MemoryStore:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, self.history_file)
-
-            # fsync the directory so the rename is durable.
-            # On Windows, opening a directory with O_RDONLY raises
-            # PermissionError — skip the dir sync there (NTFS
-            # journals metadata synchronously).
-            # 扩展 suppress 范围，覆盖目录不存在/已非目录等边缘情况
-            with suppress(PermissionError, FileNotFoundError, NotADirectoryError, OSError):
-                fd = os.open(str(self.history_file.parent), os.O_RDONLY)
-                try:
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
+            # fsync the directory so the rename is durable (skipped on
+            # Windows, where directories cannot be opened with O_RDONLY).
+            fsync_parent_dir(self.history_file)
         # 使用 Exception 而非 BaseException，避免吞掉 KeyboardInterrupt 等系统级中断
         except Exception:
             tmp_path.unlink(missing_ok=True)

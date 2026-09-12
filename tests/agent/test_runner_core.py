@@ -227,7 +227,12 @@ async def test_runner_replaces_empty_tool_result_with_marker():
 
 @pytest.mark.asyncio
 async def test_runner_retries_empty_final_response_with_summary_prompt():
-    """Empty responses get 2 silent retries before finalization kicks in."""
+    """Empty recovery = 1 silent retry, then a finalization pass.
+
+    ``_MAX_EMPTY_RECOVERY_ROUNDS`` counts recovery *rounds*, not retries: round
+    one repeats the turn silently, the last round switches to the finalization
+    prompt (hence ``tools is None`` on the final call).
+    """
     from erza.agent.runner import AgentRunner, AgentRunSpec
 
     provider = MagicMock(spec=LLMProvider)
@@ -263,7 +268,8 @@ async def test_runner_retries_empty_final_response_with_summary_prompt():
     )
 
     assert result.final_content == "final answer"
-    # 2 silent retries (iterations 0,1) + finalization on iteration 1
+    # call 0 = empty (silent retry) -> call 1 = empty (finalization pass)
+    # -> call 2 = final answer, sent without tool definitions.
     assert len(calls) == 3
     assert calls[0]["tools"] is not None
     assert calls[1]["tools"] is not None

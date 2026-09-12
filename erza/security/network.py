@@ -41,16 +41,26 @@ _BLOCKED_NETWORKS = [
     ipaddress.ip_network("::1/128"),
     ipaddress.ip_network("fc00::/7"),  # unique local
     ipaddress.ip_network("fe80::/10"),  # link-local v6
+    # --- IPv6 特殊网段:这些地址在多数协议栈上等价于本机或可映射到内网 IPv4,
+    # 缺失会让 `http://[::]/`、NAT64 等形式绕过 SSRF 防护。
+    ipaddress.ip_network("::/128"),  # unspecified，多数栈等价 localhost
+    ipaddress.ip_network("::/96"),  # IPv4-compatible(含 ::1、::0.0.0.x)
+    ipaddress.ip_network("64:ff9b::/96"),  # NAT64 well-known prefix，可映射内网 IPv4
+    ipaddress.ip_network("2002::/16"),  # 6to4，内嵌 IPv4(RFC 7526 已弃用)
 ]
 
 # Networks that are ALWAYS blocked, even if the operator adds them to the
 # SSRF whitelist via ``configure_ssrf_whitelist``.  These cover cloud metadata
-# endpoints (169.254.0.0/16 — AWS/GCP/Azure IMDS) and loopback (127.0.0.0/8,
-# ::1) which must never be reachable from a server-side fetch context.
+# endpoints (169.254.0.0/16 — AWS/GCP/Azure IMDS), loopback (127.0.0.0/8, ::1),
+# the unspecified address (``0.0.0.0`` / ``::``，多系统上等价本机) and NAT64
+# (``64:ff9b::/96``，可把内网 IPv4 编码成"公网"v6 地址)，必须永不开放。
 _HARD_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("169.254.0.0/16"),  # link-local / cloud metadata
     ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("::/128"),
+    ipaddress.ip_network("64:ff9b::/96"),
 ]
 
 # Networks blocked even in ``allow_private`` mode: cloud metadata endpoints
@@ -61,7 +71,13 @@ _METADATA_NETWORKS = [
     ipaddress.ip_network("fe80::/10"),  # link-local v6
 ]
 
-_URL_RE = re.compile(r"https?://[^\s\"'`;|<>]+", re.IGNORECASE)
+# 匹配任意 scheme 的 URL。原先只匹配 http(s)，导致 `curl gopher://169.254.169.254/_`
+# 这类命令完全绕过 SSRF 守卫(exec 是独立子进程，不经过 httpx 的 SSRF client，
+# 该守卫是 shell 场景下唯一防线)。非 http(s) scheme 由
+# ``_non_http_scheme_targets_internal`` 解析 host 后按内网判定。
+_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s\"'`;|<>]+")
+
+_HTTP_SCHEMES = frozenset({"http", "https"})
 
 # 已知 HTTP 客户端命令名(小写,含 .exe 后缀)。这些工具对无 scheme 的
 # 主机/IP 参数会默认补 http://,因此 SSRF 检查必须覆盖这种形式。
@@ -77,6 +93,11 @@ _HTTP_CLIENT_BINARIES: frozenset[str] = frozenset(
 
 # schemeless 目标参数的可接受首字符(用于在命令行中识别 URL candidate)。
 # 排除 '-'(选项标志)、数字开头的重定向(如 2>)、以及 shell 元字符。
+#
+# 除域名 / 点分 IPv4 外,还必须覆盖 curl/wget 接受的**遗留数字形式**:
+# ``0x7f000001``(十六进制)、``127.1``(短式)、``0177.0.0.1``(八进制)、
+# ``2130706433``(打包十进制)。这些形式会绕过仅匹配点分四段的正则。
+# 打包十进制要求 7-10 位,避免把普通短数字参数(如 ``--retry 5``)误判为目标。
 _SCHEMELESS_TARGET_RE = re.compile(
     r"(?<![A-Za-z0-9])"
     r"(?:"
@@ -84,7 +105,11 @@ _SCHEMELESS_TARGET_RE = re.compile(
     r"|"
     r"(?:[A-Za-z][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}"  # domain.tld
     r"|"
-    r"(?:\d{1,3}\.){3}\d{1,3}"  # IPv4 literal
+    r"(?:0[xX][0-9A-Fa-f]{1,8})"  # 0x7f000001 (hex IPv4)
+    r"|"
+    r"(?:\d{1,4}(?:\.\d{1,4}){1,3})"  # 127.1 / 127.0.0.1 / 0177.0.0.1(八进制4位)
+    r"|"
+    r"(?:\d{7,10})"  # 2130706433 (packed decimal IPv4)
     r")"
     r"(?::\d+)?"  # optional :port
     r"(?:/[^\s\"'`;|<>]*)?"  # optional path
@@ -360,38 +385,113 @@ def validate_resolved_url(url: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _parse_numeric_host(token: str) -> ipaddress.IPv4Address | None:
+    """解析遗留数字形式的 IPv4(十进制 / 十六进制 / 八进制 / 短式)。
+
+    ``ipaddress.ip_address`` 拒绝 ``2130706433`` / ``0x7f000001`` / ``127.1`` /
+    ``0177.0.0.1``,而 curl/wget 与多数 libc 解析器都接受它们 —— 这正是它们
+    能绕过 SSRF 守卫的原因。``socket.inet_aton`` 与 libc 行为一致。
+    """
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(token))
+    except (OSError, ValueError):
+        return None
+
+
+def _host_targets_internal(hostname: str, *, allow_loopback: bool = False) -> bool:
+    """*hostname* 是域名 / IP 字面量 / 遗留数字形式时,判断其解析结果是否内网。
+
+    解析失败(无法解析的域名)视为"非内网"——守卫只负责拦截可确认的内网目标,
+    不因 DNS 失败而阻断正常命令(真正的出站请求仍会被 httpx 侧校验拦下)。
+    """
+    if not hostname:
+        return False
+    numeric = _parse_numeric_host(hostname)
+    if numeric is not None:
+        if allow_loopback and numeric.is_loopback:
+            return False
+        return _is_private(numeric)
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except (socket.gaierror, OSError):
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if allow_loopback and _is_allowed_loopback_target(hostname, [addr]):
+            continue
+        if _is_private(addr):
+            return True
+    return False
+
+
+def _strip_host_port(target: str) -> str:
+    """从 ``host[:port][/path]`` 形式的 candidate 中取出 host 部分。"""
+    host = target.split("/", 1)[0]
+    if host.startswith("["):  # [::1]:8080
+        end = host.find("]")
+        return host[1:end] if end != -1 else host[1:]
+    if host.count(":") == 1:
+        return host.rsplit(":", 1)[0]
+    return host
+
+
 def contains_internal_url(command: str, *, allow_loopback: bool = False) -> bool:
     """Return True if the command string contains a URL targeting an internal/private address.
 
-    覆盖两种形式:
-    1. 显式 ``http://`` / ``https://`` URL(原行为)。
-    2. 已知 HTTP 客户端(curl/wget 等)的无 scheme 主机/IP 参数 —— 这些工具
+    覆盖三类形式:
+
+    1. 显式 URL(``http://`` / ``https://``)——走 ``validate_url_target``。
+    2. **任意其它 scheme** 的 URL(``gopher://`` / ``ftp://`` / ``dict://`` …)
+       ——只解析 host 并按内网判定。过去 ``_URL_RE`` 只匹配 http(s),这类
+       命令会完全绕过守卫。
+    3. 已知 HTTP 客户端(curl/wget 等)的无 scheme 主机/IP 参数 —— 这些工具
        会默认补 ``http://``,因此 ``curl example.com`` 与 ``curl http://example.com``
-       等价,必须进入同一 ``validate_url_target`` 流程,否则可绕过 SSRF 检查。
+       等价,必须进入同一校验流程;同时覆盖十六进制 / 八进制 / 短式 / 打包十进制
+       等遗留数字形式。
     """
     for m in _URL_RE.finditer(command):
         url = m.group(0)
-        ok, _ = validate_url_target(url, allow_loopback=allow_loopback)
+        scheme = url.split("://", 1)[0].lower()
+        if scheme in _HTTP_SCHEMES:
+            ok, _ = validate_url_target(url, allow_loopback=allow_loopback)
+        else:
+            ok, _ = _validate_non_http_url(url, allow_loopback=allow_loopback)
         if not ok:
             return True
 
     # 检测已知 HTTP 客户端的无 scheme 参数。通过简单的 token 分词识别命令名,
-    # 后续非选项 token(不以 ``-`` 开头)若匹配域名/IPv4 形式,补 ``http://``
-    # 后再次校验。这样可避免对任意包含点号的命令(如 ``git config user.name``)
+    # 后续非选项 token(不以 ``-`` 开头)若匹配域名/IP 形式,按同一套内网判定
+    # 校验。这样可避免对任意包含点号的命令(如 ``git config user.name``)
     # 产生误报。
     for target in _extract_schemeless_http_targets(command):
-        candidate = f"http://{target}"
-        ok, _ = validate_url_target(candidate, allow_loopback=allow_loopback)
-        if not ok:
+        if _host_targets_internal(_strip_host_port(target), allow_loopback=allow_loopback):
             return True
     return False
+
+
+def _validate_non_http_url(url: str, *, allow_loopback: bool = False) -> tuple[bool, str]:
+    """校验非 http(s) scheme 的 URL:只判断 host 是否解析到内网。"""
+    try:
+        parsed = urlparse(url)
+    except Exception as e:  # pragma: no cover - urlparse 极少抛错
+        return False, str(e)
+    hostname = parsed.hostname
+    if not hostname:
+        return True, ""  # 无 host(如 file:///path)不在本守卫职责内
+    if _host_targets_internal(hostname, allow_loopback=allow_loopback):
+        return False, f"Blocked: {hostname} resolves to private/internal address"
+    return True, ""
 
 
 def _extract_schemeless_http_targets(command: str) -> list[str]:
     """从命令中提取已知 HTTP 客户端(curl/wget 等)的无 scheme URL 参数。
 
     只在这些客户端的命令上下文中提取,避免对 ``git config user.email`` 等无关
-    命令误报。返回的 target 不含 scheme,调用方负责补全。
+    命令误报。返回的 target 是 host[:port][/path] 形式,调用方用
+    ``_strip_host_port`` 取出 host 后按内网判定。
     """
     targets: list[str] = []
     # 按空白/管道/重定向分词,识别命令名位置(管道后的第一个 token 也是命令)。

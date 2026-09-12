@@ -4,6 +4,37 @@ from typing import Any, Callable
 
 from erza.tools.base import Tool
 
+#: Retry guidance appended to a failed tool result for the model.
+RETRY_HINT = "\n\n[Analyze the error above and try a different approach.]"
+
+_ERROR_WORD = "Error"
+
+
+def is_tool_error_payload(value: Any) -> bool:
+    """Return True when a tool result is its own error message.
+
+    Tool implementations report failure as a string beginning with ``Error``
+    (``"Error: …"``, ``"Error reading file: …"``).  A bare ``startswith`` also
+    flags *legitimate* content that merely begins with the same letters —
+    ``read_file`` on a file starting with "Errors in the log" is a real case —
+    so the word must be followed by a delimiter (end of string, ``:``, or
+    whitespace).  ``"Errors…"``/``"Error-prone…"`` are therefore treated as
+    content, while every established error form still matches.
+    """
+    if not isinstance(value, str) or not value.startswith(_ERROR_WORD):
+        return False
+    remainder = value[len(_ERROR_WORD) :]
+    return not remainder or remainder[0] in ": \t\n\r"
+
+
+def with_retry_hint(text: str) -> str:
+    """Append :data:`RETRY_HINT` unless it is already present.
+
+    The registry and the agent's tool-execution layer both decorate failures;
+    appending blindly would emit the guidance twice for the same result.
+    """
+    return text if RETRY_HINT in text else text + RETRY_HINT
+
 
 class ToolRegistry:
     """
@@ -118,19 +149,18 @@ class ToolRegistry:
 
     async def execute(self, name: str, params: dict[str, Any]) -> Any:
         """Execute a tool by name with given parameters."""
-        _hint = "\n\n[Analyze the error above and try a different approach.]"
         tool, params, error = self.prepare_call(name, params)
         if error:
-            return error + _hint
+            return with_retry_hint(error)
 
         try:
             assert tool is not None  # guarded by prepare_call()
             result = await tool.execute(**params)
-            if isinstance(result, str) and result.startswith("Error"):
-                return result + _hint
+            if is_tool_error_payload(result):
+                return with_retry_hint(result)
             return result
         except Exception as e:
-            return f"Error executing {name}: {str(e)}" + _hint
+            return with_retry_hint(f"Error executing {name}: {str(e)}")
 
     @property
     def tool_names(self) -> list[str]:

@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -43,6 +44,82 @@ _JOURNAL_FILE = "journal.jsonl"
 _MANIFEST_FILE = "storage-migration-v2.json"
 _MANIFEST_SCHEMA_VERSION = 1
 _IMPORTING_GLOB = "memory.db.importing*"
+# Temp manifests use the same token suffix but a different prefix; without this
+# pattern a crash mid-migration would leave ``storage-migration-v2.json.importing-*``
+# residue behind forever.
+_IMPORTING_MANIFEST_GLOB = f"{_MANIFEST_FILE}.importing*"
+_IMPORTING_GLOBS = (_IMPORTING_GLOB, _IMPORTING_MANIFEST_GLOB)
+# Residue younger than this is assumed to belong to a live migration run and is
+# left alone; older residue (or residue whose owning PID is gone) is removed.
+_STALE_IMPORT_AGE_S = 3600.0
+
+
+def _owner_pid(name: str) -> int | None:
+    """Extract the PID from an ``...importing-<pid>-<uuid>`` residue name."""
+    marker = ".importing-"
+    idx = name.find(marker)
+    if idx < 0:
+        return None
+    tail = name[idx + len(marker) :]
+    pid_text = tail.split("-", 1)[0]
+    try:
+        return int(pid_text)
+    except ValueError:
+        return None
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Best-effort liveness probe for *pid*.
+
+    Returns True when it cannot be determined (conservative: keep the file).
+    On Windows ``os.kill(pid, 0)`` would *terminate* the target process, so we
+    never call it there and fall back to the age-based rule only.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":  # pragma: no cover - platform specific
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _cleanup_stale_import_residue(structured_dir: Path) -> None:
+    """Remove interrupted-migration temp files, never a live run's.
+
+    Two globs are covered (temp DB *and* temp manifest).  A residue is removed
+    unless it provably belongs to a still-running migration:
+
+    * owner PID unparseable -> abandoned (a live run always writes its PID);
+    * owner PID gone        -> abandoned;
+    * owner PID alive       -> only cleaned once older than
+      ``_STALE_IMPORT_AGE_S`` (a safety net for platforms where liveness
+      cannot be probed reliably, e.g. Windows).
+
+    Unlinking a concurrent process's in-progress temp database would corrupt
+    that run, so the "alive" case errs on the side of leaving it alone.
+    """
+    now = time.time()
+    for pattern in _IMPORTING_GLOBS:
+        for residue in structured_dir.glob(pattern):
+            try:
+                age = now - residue.stat().st_mtime
+            except OSError:
+                continue
+            pid = _owner_pid(residue.name)
+            stale = not (pid is not None and _pid_is_alive(pid)) or age > _STALE_IMPORT_AGE_S
+            if not stale:
+                continue
+            try:
+                residue.unlink()
+            except OSError:
+                pass
 
 
 class JsonlImportResult(BaseModel):
@@ -117,11 +194,7 @@ def migrate_legacy_journal(workspace: Path, lock_timeout_s: float = 5.0) -> Json
     except OSError:
         return JsonlImportResult(migrated=False)
 
-    for residue in structured_dir.glob(_IMPORTING_GLOB):
-        try:
-            residue.unlink()
-        except OSError:
-            pass
+    _cleanup_stale_import_residue(structured_dir)
 
     original_bytes = journal_path.read_bytes()
     source_sha256 = hashlib.sha256(original_bytes).hexdigest()

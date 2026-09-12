@@ -26,6 +26,7 @@ from erza.agent.step_acceptance import ToolObservation
 from erza.agent.tool_checkpoint import ToolCheckpoint
 from erza.providers.base import ToolCallRequest
 from erza.tools.receipts import take_receipt
+from erza.tools.registry import RETRY_HINT, is_tool_error_payload, with_retry_hint
 from erza.utils.file_edit_events import (
     build_file_edit_end_event,
     build_file_edit_error_event,
@@ -354,7 +355,7 @@ class ToolExecutionCoordinator:
         external_lookup_counts: dict[str, int],
         workspace_violation_counts: dict[str, int],
     ) -> tuple[Any, dict[str, Any], BaseException | None]:
-        hint = "\n\n[Analyze the error above and try a different approach.]"
+        hint = RETRY_HINT
         lookup_error = repeated_external_lookup_error(
             tool_call.name,
             tool_call.arguments,
@@ -384,7 +385,7 @@ class ToolExecutionCoordinator:
             }
             handled = classify_violation(
                 raw_text=prep_error,
-                soft_payload=prep_error + hint,
+                soft_payload=with_retry_hint(prep_error),
                 event=event,
                 tool_call=tool_call,
                 workspace_violation_counts=workspace_violation_counts,
@@ -392,7 +393,7 @@ class ToolExecutionCoordinator:
             if handled is not None:
                 return handled
             return (
-                prep_error + hint,
+                with_retry_hint(prep_error),
                 event,
                 (RuntimeError(prep_error) if spec.fail_on_tool_error else None),
             )
@@ -460,7 +461,7 @@ class ToolExecutionCoordinator:
                 return payload, event, exc
             return payload, event, None
 
-        if isinstance(result, str) and result.startswith("Error"):
+        if is_tool_error_payload(result):
             if file_edit_trackers and progress_callback is not None:
                 await invoke_file_edit_progress(
                     progress_callback,
@@ -476,7 +477,7 @@ class ToolExecutionCoordinator:
             }
             handled = classify_violation(
                 raw_text=result,
-                soft_payload=result + hint,
+                soft_payload=with_retry_hint(result),
                 event=event,
                 tool_call=tool_call,
                 workspace_violation_counts=workspace_violation_counts,
@@ -484,8 +485,8 @@ class ToolExecutionCoordinator:
             if handled is not None:
                 return handled
             if spec.fail_on_tool_error:
-                return result + hint, event, RuntimeError(result)
-            return result + hint, event, None
+                return with_retry_hint(result), event, RuntimeError(result)
+            return with_retry_hint(result), event, None
 
         if file_edit_trackers and progress_callback is not None:
             await invoke_file_edit_progress(

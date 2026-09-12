@@ -84,8 +84,14 @@ def test_gateway_application_assembles_all_parts(tmp_path, monkeypatch):
     assert app.agent._provider_snapshot_loader is loader
 
 
-async def test_stop_shuts_down_in_reverse_order(tmp_path, monkeypatch):
-    """stop() runs the legacy layered cleanup in its exact existing order."""
+async def test_stop_shuts_down_producers_before_mcp(tmp_path, monkeypatch):
+    """stop() stops every producer before tearing MCP down.
+
+    MCP used to be closed first, leaving a window where a cron job or an
+    in-flight channel send could reach an already-closed MCP connection. The
+    invariant under test is: cron/agent/channels stop first, MCP closes last,
+    and the session flush is always the final step.
+    """
     config = _make_config(tmp_path)
     provider = _fake_provider()
     _patch_provider_factory(monkeypatch, provider)
@@ -112,11 +118,15 @@ async def test_stop_shuts_down_in_reverse_order(tmp_path, monkeypatch):
     await app.stop()
 
     assert order == [
-        "agent.close_mcp",
         "cron.stop",
         "cron.await_stop",
         "agent.stop",
-        "registry.shutdown",
         "channels.stop_all",
+        "registry.shutdown",
+        "agent.close_mcp",
         "sessions.flush_all",
     ]
+    # MCP is closed after every producer has stopped.
+    assert order.index("agent.close_mcp") > order.index("cron.await_stop")
+    assert order.index("agent.close_mcp") > order.index("channels.stop_all")
+    assert order[-1] == "sessions.flush_all"

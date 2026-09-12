@@ -30,7 +30,17 @@ if TYPE_CHECKING:
     from erza.agent.runner import AgentRunner, AgentRunSpec, _TurnState
     from erza.providers.base import LLMResponse
 
-_MAX_EMPTY_RETRIES = 2
+#: Number of empty-response recovery *rounds* per turn.  The first round issues
+#: a plain retry; the final round switches to the finalization prompt (a
+#: different, stronger instruction).  ``2`` therefore means "one silent retry,
+#: then one finalization attempt" — see ``_handle_empty_response``.
+_MAX_EMPTY_RECOVERY_ROUNDS = 2
+#: Backwards-compatible alias.  The name reads like a retry *count*, which is
+#: exactly the off-by-one ambiguity this pair of constants removes: with
+#: ``rounds < 2`` only one silent retry is issued, because the second round is
+#: the finalization pass, not another retry.
+_MAX_EMPTY_RETRIES = _MAX_EMPTY_RECOVERY_ROUNDS
+#: Number of length-truncation recoveries (snip-and-continue) per turn.
 _MAX_LENGTH_RECOVERIES = 3
 _SNIP_SAFETY_BUFFER = 1024
 
@@ -204,13 +214,16 @@ class TurnRecoveryPolicy:
         if response.finish_reason == "error" or not is_blank_text(clean):
             return "proceed", response, raw_usage, clean
         state.empty_content_retries += 1
-        if state.empty_content_retries < _MAX_EMPTY_RETRIES:
+        # Compare against the *rounds* constant: round 1 = silent retry, round 2
+        # = finalization pass (below).  Using ``<`` on the round counter is what
+        # makes "2 rounds" mean exactly one retry plus one finalization.
+        if state.empty_content_retries < _MAX_EMPTY_RECOVERY_ROUNDS:
             logger.warning(
                 "Empty response on turn {} for {} ({}/{}); retrying",
                 iteration,
                 spec.session_key or "default",
                 state.empty_content_retries,
-                _MAX_EMPTY_RETRIES,
+                _MAX_EMPTY_RECOVERY_ROUNDS,
             )
             if hook.wants_streaming():
                 await hook.on_stream_end(context, resuming=False)

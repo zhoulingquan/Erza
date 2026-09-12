@@ -81,12 +81,30 @@ def test_exec_session_accepts_max_output_tokens_alias(tmp_path):
     async def run() -> str:
         manager = ExecSessionManager()
         tool = ExecTool(working_dir=str(tmp_path), timeout=5, session_manager=manager)
+        stdin_tool = WriteStdinTool(manager=manager)
         command = _python_command("print('A' * 2000)")
-        return await tool.execute(
+
+        # The 1s yield can expire before the interpreter has even started, in
+        # which case exec legitimately returns "Process running" with no output
+        # yet. Keep polling with the *same* 1000-char budget until the process
+        # exits, so this asserts truncation regardless of which poll happens to
+        # carry the payload, and the final poll carries the exit code.
+        result = await tool.execute(
             command=command,
             yield_time_ms=1000,
             max_output_tokens=1000,
         )
+        for _ in range(10):
+            if "session_id:" not in result:
+                break
+            sid = _session_id(result)
+            result += "\n" + await stdin_tool.execute(
+                session_id=sid,
+                chars="",
+                yield_time_ms=1000,
+                max_output_tokens=1000,
+            )
+        return result
 
     result = asyncio.run(run())
 
