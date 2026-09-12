@@ -5,7 +5,7 @@
 把任意 LLM 变成长期运行、可治理、可审计的 Agent 系统——  
 一条透明的执行内核，一套确定性的治理机制，一层可插拔的接入面。
 
-![Python](https://img.shields.io/badge/python-≥3.11-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Release](https://img.shields.io/badge/release-v0.4.0-success) ![Status](https://img.shields.io/badge/status-alpha-orange)
+![Python](https://img.shields.io/badge/python-≥3.11-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Release](https://img.shields.io/badge/release-v0.7.0-success) ![Status](https://img.shields.io/badge/status-alpha-orange)
 
 **[简体中文]** | [English](./README.en.md)
 
@@ -81,14 +81,28 @@ Thought → Action → Observation 的固定循环。这是系统**唯一的处�
 
 失败或每 N 轮触发一句话反思，写入 `reflections.jsonl`；**Dream** 在空闲时（`dream_trigger.py`，用户停用 5 分钟后触发，与 cron 保底互补）把新增摘要与反思蒸馏成候选事实，进入受治理的记忆生命周期。目标是跨轮次学习——不重复同一个错误。
 
+### 并发与隔离（`agent/turn_overrides.py`）
+
+provider / model / light-context 等 per-turn 覆盖基于 `ContextVar` 隔离：心跳、Dream 等后台任务可以携带自己的模型配置运行，而不污染同一进程内并发执行的用户回合；后台任务显式脱离覆盖上下文，读到的永远是默认配置。
+
+### 可靠性防线
+
+为长期运行而设计的确定性防线，全部不依赖模型自觉：
+
+- **入站消费守卫**（`agent/dispatch.py`）：消费端持续失败时指数退避，连续 25 次后快速失败——热循环不会静默打满 CPU
+- **出站发送超时**（`channels.sendTimeoutS`，默认 30s）：单个慢客户端只会让自己掉线，不会冻结整个网关的派发
+- **原子持久化**：会话/配置/记忆写入均为"临时文件 + fsync + rename + 父目录 fsync"，崩溃不产生半行；记忆 `append_history` 的"读游标 → 追加 → 写游标"全程跨进程 `FileLock`
+- **常量时间凭证比较**（`security/tokens.py`）：token / secret 校验统一走编码后的 `hmac.compare_digest`，非 ASCII 输入不会在握手处抛异常
+
+
 ## 状态与记忆
 
 | 层    | 载体                            | 职责                                                                                                          |
 | ---- | ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| 短期会话 | `session/`                    | 活跃对话上下文，原子写入（临时文件 + fsync + rename），崩溃安全                                                                    |
+| 短期会话 | `session/`                    | 活跃对话上下文，原子写入（临时文件 + fsync + rename + 父目录 fsync），崩溃安全；损坏会话自动修复且修复路径自身有守卫                                        |
 | 压缩归档 | `memory/history.jsonl`        | 追加式历史摘要，带游标，由 Consolidator 维护                                                                               |
 | 长期知识 | `memory/structured/memory.db` | **SQLite 单一事实存储**（`memory/repository.py`，fail-closed 健康检查），仅 `memory/lifecycle.py` 有权晋升/替换/吊销/过期记录，全部变更走单事务 |
-| 教训沉淀 | `memory/reflections.jsonl`    | 失败与周期性反思                                                                                                    |
+| 教训沉淀 | `memory/reflections.jsonl`    | 失败与周期性反思（追加全程跨进程 FileLock，游标原子写）                                          |
 | 版本历史 | `utils/` GitStore（内嵌 Git）     | 长期文件每次变更可 diff、可回滚                                                                                          |
 
 记忆进入提示词的唯一路径是**确定性召回**：只召回符合精确作用域的 active 事实；候选事实、历史归档不会整体注入。旧版 JSONL 日志仅作为迁移输入（`memory/jsonl_import.py`）。
@@ -124,7 +138,7 @@ Thought → Action → Observation 的固定循环。这是系统**唯一的处�
 
 | 模块                   | 职责                                                                                                                   |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `channels/`（12.6k 行） | 5 个 IM 适配器（飞书/微信/企微/钉钉/QQ）+ WebSocket，统一 `BaseChannel` 接口，二维码扫码登录（`QRCodeAuthHandler`），`allowFrom` 准入白名单，均为可选 extras |
+| `channels/`（12.9k 行） | 5 个 IM 适配器（飞书/微信/企微/钉钉/QQ）+ WebSocket，统一 `BaseChannel` 接口，二维码扫码登录（`QRCodeAuthHandler`），`allowFrom` 准入白名单，均为可选 extras |
 | `bus/`               | 49 行异步消息总线，有界队列 + 自然背压，入站/出站解耦                                                                                       |
 | `command/`           | 斜杠命令路由，priority / exact / prefix 三层匹配，含治理型记忆管理命令                                                                     |
 | `cron/`              | 自然语言定时任务，持久化存储，重启后补执行                                                                                                |
@@ -135,9 +149,9 @@ Thought → Action → Observation 的固定循环。这是系统**唯一的处�
 
 | 边界       | 机制                                                                              |
 | -------- | ------------------------------------------------------------------------------- |
-| 文件访问     | 工作区路径边界（`security/workspace_policy.py`），越界是硬策略错误，模型不可用 shell 技巧绕过               |
-| Shell 执行 | 可选 `bwrap` 沙箱、受限环境变量注入、exec_session 配置门控                                        |
-| 出站 HTTP  | SSRF 防护：传输层钩子拦截 IP 字面量目标、DNS rebinding 钉扎（30s TTL）、重定向复检（`security/network.py`） |
+| 文件访问     | 工作区路径边界（`security/workspace_policy.py`），越界是硬策略错误，模型不可用 shell 技巧绕过；契约工具写入后做 TOCTOU 复核 |
+| Shell 执行 | 可选 `bwrap` 沙箱、受限环境变量注入、exec_session 配置门控；命令行绝对路径提取覆盖 `<`、`=`、`(` 等引导形态，`cat </etc/passwd`、`dd if=...` 纳入 containment 检查 |
+| 出站 HTTP  | SSRF 防护：传输层钩子拦截 IP 字面量目标（IPv4/IPv6 未指定地址、NAT64、0.0.0.0/8 硬黑名单）、DNS rebinding 钉扎（30s TTL）、重定向复检（`security/network.py`）；exec 命令行的 URL 守卫覆盖任意 scheme 与十进制/十六进制/八进制/短式 IP 变体 |
 | 风险分级     | `RiskLevel` 标注工具风险，高危工具经审批门（approval gate）与检查点隔离（`agent/tool_checkpoint.py`）    |
 | 频道准入     | 各频道 `allowFrom` 白名单                                                             |
 
@@ -163,27 +177,27 @@ print(result.content, result.tools_used)
 
 ## 代码地图
 
-Python 源码约 **7.0 万行**（69.6k），WebUI TypeScript 约 **4.0 万行**，测试 **253 个文件 / 8.5 万行**：
+Python 源码约 **7.1 万行**（70.8k），WebUI TypeScript 约 **4.0 万行**，测试 **276 个文件 / 8.8 万行**：
 
 | 包                   | 行数     | 职责                                      |
 | ------------------- | ------ | --------------------------------------- |
-| `erza/channels/`    | 12,644 | IM 频道适配器与媒体处理                           |
-| `erza/agent/`       | 12,511 | 执行内核：状态机、ReAct、规划、验收、上下文治理              |
-| `erza/tools/`       | 8,963  | 内置工具、注册表、MCP 运行时、沙箱                     |
-| `erza/webui/`       | 6,485  | 控制台网关 API（前端在仓库根 `webui/`）              |
-| `erza/memory/`      | 6,163  | SQLite 记忆仓库、生命周期治理、Dream 蒸馏             |
-| `erza/providers/`   | 5,121  | 多提供商抽象与 Fallback 链                      |
-| `erza/cli/`         | 3,717  | Typer 命令、终端渲染、网关运行器                     |
-| `erza/utils/`       | 3,516  | 文档解析、媒体解码、GitStore、原子写                  |
+| `erza/agent/`       | 12,978 | 执行内核：状态机、ReAct、规划、验收、上下文治理、并发隔离          |
+| `erza/channels/`    | 12,862 | IM 频道适配器与媒体处理                           |
+| `erza/tools/`       | 9,024  | 内置工具、注册表、MCP 运行时、沙箱                     |
+| `erza/webui/`       | 6,638  | 控制台网关 API（前端在仓库根 `webui/`）              |
+| `erza/memory/`      | 6,382  | SQLite 记忆仓库、生命周期治理、Dream 蒸馏             |
+| `erza/providers/`   | 5,147  | 多提供商抽象与 Fallback 链                      |
+| `erza/cli/`         | 3,712  | Typer 命令、终端渲染、网关运行器                     |
+| `erza/utils/`       | 3,575  | 文档解析、媒体解码、GitStore、原子写                  |
 | `erza/skills/`      | 2,105  | 内置技能包                                   |
-| `erza/session/`     | 1,608  | 会话持久化与目标状态                              |
-| `erza/config/`      | 1,285  | Pydantic 配置模型（camelCase/snake_case 双兼容） |
+| `erza/session/`     | 1,625  | 会话持久化与目标状态                              |
+| `erza/security/`    | 1,374  | 工作区边界、SSRF、风险分级、常量时间比较                  |
+| `erza/config/`      | 1,272  | Pydantic 配置模型（camelCase/snake_case 双兼容） |
 | `erza/command/`     | 1,258  | 斜杠命令路由                                  |
-| `erza/security/`    | 1,240  | 工作区边界、SSRF、风险分级                         |
-| `erza/cron/`        | 1,014  | 定时任务服务                                  |
-| `erza/composition/` | 573    | 组合根（gateway / agent_app）                |
+| `erza/cron/`        | 1,042  | 定时任务服务                                  |
+| `erza/composition/` | 625    | 组合根（gateway / agent_app）                |
 | `erza/api_compat/`  | 557    | OpenAI 兼容 API                           |
-| `erza/ledger/`      | 431    | 调用账本与轮次预算                               |
+| `erza/ledger/`      | 447    | 调用账本与轮次预算                               |
 | `erza/bus/`         | 141    | 消息总线                                    |
 | `erza/erza.py`      | SDK 门面 | `Erza.from_config().run()`              |
 
@@ -235,11 +249,11 @@ erza onboard --wizard # 交互式配置向导
 
 Markdown + YAML frontmatter 定义，按需加载：
 
-`cron` · `document-processing` · `github` · `long-goal` · `memory` · `my` · `skill-creator` · `summarize` · `tmux` · `update-setup` · `weather`
+`cron` · `document-processing` · `github` · `long-goal` · `memory` · `my` · `skill-creator` · `update-setup` · `weather`
 
 ## 测试与质量
 
-253 个测试文件、8.5 万行测试代码，覆盖全部核心模块；`pytest-asyncio` 自动模式 + 覆盖率统计；`ruff` 静态检查；CI 覆盖三大操作系统矩阵。
+276 个测试文件、8.8 万行测试代码，覆盖全部核心模块；`pytest-asyncio` 自动模式 + 覆盖率统计；`ruff` 静态检查；CI 覆盖三大操作系统矩阵。
 
 ```bash
 pip install -e ".[dev]"
