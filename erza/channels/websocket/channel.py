@@ -11,7 +11,6 @@ keep working unchanged.
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import mimetypes
 import secrets
@@ -34,6 +33,7 @@ from erza.bus.events import OUTBOUND_META_AGENT_UI, OutboundMessage
 from erza.bus.queue import MessageBus
 from erza.channels.base import BaseChannel
 from erza.config.paths import get_media_dir, get_workspace_path
+from erza.security.tokens import constant_time_equals
 from erza.security.workspace_access import (
     WORKSPACE_SCOPE_METADATA_KEY,
     WorkspaceScopeError,
@@ -641,13 +641,19 @@ class WebSocketChannel(BaseChannel):
             except Exception:
                 logger.exception("Cron reloader failed after runtime settings update")
 
-    def _reload_mcp_safe(self) -> None:
+    async def _reload_mcp_safe(self) -> dict[str, Any]:
         """触发 MCP 服务热重载。``request_mcp_reload`` 名字解析自本模块全局,
-        所以测试对 ``channel.request_mcp_reload`` 的 monkeypatch 仍能拦截。"""
+        所以测试对 ``channel.request_mcp_reload`` 的 monkeypatch 仍能拦截。
+
+        必须 ``await``:``request_mcp_reload`` 是协程,旧实现直接调用它只会
+        产生一个从未被调度的协程对象,热重载实际不会发生。返回值供
+        ``McpReload`` 契约(``Callable[[], Awaitable[dict]]``)使用。
+        """
         try:
-            request_mcp_reload(self.bus)
+            return await request_mcp_reload(self.bus)
         except Exception:
             logger.exception("MCP reload failed after preset change")
+            return {"ok": False, "requires_restart": True}
 
     def _notify_session_updated_safe(self, chat_id: str) -> None:
         """fire-and-forget: 通知连接的 WS 客户端刷新会话视图。"""
@@ -1009,7 +1015,7 @@ class WebSocketChannel(BaseChannel):
         static_token = self.config.token.strip()
 
         if static_token:
-            if supplied and hmac.compare_digest(supplied, static_token):
+            if supplied and constant_time_equals(supplied, static_token):
                 return None
             if supplied and self._take_issued_token_if_valid(supplied):
                 return None
@@ -1185,7 +1191,7 @@ class WebSocketChannel(BaseChannel):
 
     # -- Inbound WebSocket envelopes ---------------------------------------
 
-    def _save_envelope_media(
+    async def _save_envelope_media(
         self,
         media: list[Any],
     ) -> tuple[list[str], str | None]:
@@ -1199,7 +1205,18 @@ class WebSocketChannel(BaseChannel):
         ``reason`` is a short, stable token suitable for UI localization.
 
         Shape: ``list[{"data_url": str, "name"?: str | None}]``.
+
+        Runs on a worker thread: a single attachment can be up to 40 MB of
+        base64, and decoding + writing that inline would block every other
+        connection and timer on the gateway's event loop.
         """
+        return await asyncio.to_thread(self._save_envelope_media_sync, media)
+
+    def _save_envelope_media_sync(
+        self,
+        media: list[Any],
+    ) -> tuple[list[str], str | None]:
+        """Blocking implementation of :meth:`_save_envelope_media`."""
         image_count = 0
         video_count = 0
         for item in media:
@@ -1375,7 +1392,7 @@ class WebSocketChannel(BaseChannel):
                         reason="rate_limited",
                     )
                     return
-                media_paths, reason = self._save_envelope_media(raw_media)
+                media_paths, reason = await self._save_envelope_media(raw_media)
                 if reason is not None:
                     await self._send_event(
                         connection,

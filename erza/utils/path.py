@@ -37,8 +37,10 @@ def abbreviate_path(path: str, max_len: int = 40) -> str:
     if len(normalized) <= max_len:
         return normalized
 
-    # Split into segments
-    parts = normalized.rstrip("/").split("/")
+    # Split into segments.  Leading/trailing empty segments come from a root
+    # ("/a/b") or directory ("~/x/") path; dropping them prevents the folded
+    # form from picking up an empty component and rendering "…//a/b".
+    parts = [seg for seg in normalized.rstrip("/").split("/") if seg]
     if len(parts) <= 1:
         return normalized[: max_len - 1] + "\u2026"
 

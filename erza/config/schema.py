@@ -47,6 +47,11 @@ class ChannelsConfig(Base):
     send_max_retries: int = Field(
         default=3, ge=0, le=10
     )  # Max delivery attempts (initial send included)
+    send_timeout_s: float = Field(
+        default=30.0, ge=0
+    )  # Per-attempt delivery timeout; 0 disables. Guards the shared outbound
+    # dispatcher against a stalled channel (e.g. a websocket client that stops
+    # reading) freezing delivery for every other channel.
     transcription_provider: str = "groq"  # Voice transcription backend: "groq" or "openai"
     transcription_language: str | None = Field(
         default=None, pattern=r"^[a-z]{2,3}$"

@@ -10,11 +10,22 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
+
+# Reconnect policy for a dropped / never-established Feishu websocket.
+_CONNECT_TIMEOUT_S = 30.0
+_INITIAL_BACKOFF_S = 1.0
+_MAX_BACKOFF_S = 60.0
+# A connection that stayed up at least this long is considered healthy, so the
+# backoff resets instead of doubling (avoids a long delay after a one-off blip)
+# while still preventing a tight reconnect loop on a flapping endpoint.
+_BACKOFF_RESET_AFTER_S = 30.0
+_LOOP_READY_TIMEOUT_S = 10.0
 
 
 @dataclass
@@ -36,7 +47,10 @@ class FeishuWsRunner:
 
     async def start_client(self, key: str, client: Any) -> None:
         """Start or replace one client runtime."""
-        loop = self._ensure_loop()
+        # ``_ensure_loop`` blocks on ``threading.Event.wait`` until the loop
+        # thread is ready; run it off the event loop so a slow thread start
+        # (cold ``import lark_oapi``) cannot stall the whole gateway.
+        loop = await asyncio.to_thread(self._ensure_loop)
         await asyncio.wrap_future(
             asyncio.run_coroutine_threadsafe(self._start_client(key, client), loop)
         )
@@ -85,9 +99,18 @@ class FeishuWsRunner:
             if self._loop is not None and not self._loop.is_closed():
                 return self._loop
             self._ready.clear()
-            self._thread = threading.Thread(target=self._run_loop, name="feishu-ws", daemon=True)
-            self._thread.start()
-            if not self._ready.wait(timeout=10) or self._loop is None:
+            thread = threading.Thread(target=self._run_loop, name="feishu-ws", daemon=True)
+            self._thread = thread
+            thread.start()
+            if not self._ready.wait(timeout=_LOOP_READY_TIMEOUT_S) or self._loop is None:
+                # The thread may have started but never reached ``run_forever``
+                # (e.g. ``import lark_oapi`` failed).  Join it and clear state —
+                # otherwise the thread leaks and ``self._thread`` would be
+                # overwritten by the next call, losing the only reference.
+                self._ready.clear()
+                thread.join(timeout=5.0)
+                self._thread = None
+                self._loop = None
                 raise RuntimeError("Feishu WebSocket runner did not start")
             return self._loop
 
@@ -124,27 +147,60 @@ class FeishuWsRunner:
             await runtime.task
 
     async def _client_main(self, key: str, client: Any, stop_event: asyncio.Event) -> None:
-        ping_task: asyncio.Task | None = None
+        """Connect, watch the ping loop, and reconnect with capped backoff.
+
+        The ping task is monitored rather than merely awaited: a ping failure
+        (expired token, half-open socket) ends ``_ping_loop`` without ever
+        setting ``stop_event``, so the old "wait only on stop_event" version
+        never noticed a dead connection and never reconnected.
+        """
+        backoff_s = _INITIAL_BACKOFF_S
         while not stop_event.is_set():
+            ping_task: asyncio.Task | None = None
+            stop_wait: asyncio.Task | None = None
+            connected = False
+            started_at = 0.0
             try:
-                await client._connect()
+                await asyncio.wait_for(client._connect(), timeout=_CONNECT_TIMEOUT_S)
+                connected = True
+                started_at = time.monotonic()
                 ping_task = asyncio.create_task(client._ping_loop())
-                await stop_event.wait()
+                stop_wait = asyncio.create_task(stop_event.wait())
+                await asyncio.wait({ping_task, stop_wait}, return_when=asyncio.FIRST_COMPLETED)
+                if not stop_event.is_set() and ping_task.done():
+                    exc = None
+                    if not ping_task.cancelled():
+                        with suppress(Exception):
+                            exc = ping_task.exception()
+                    logger.warning(
+                        "Feishu WebSocket client '{}' ping loop ended ({}); reconnecting",
+                        key,
+                        exc if exc is not None else "closed",
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning("Feishu WebSocket client '{}' failed: {}", key, exc)
-                with suppress(Exception):
-                    await client._disconnect()
-                if not stop_event.is_set():
-                    await asyncio.sleep(5)
             finally:
+                if stop_wait is not None:
+                    stop_wait.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await stop_wait
                 if ping_task is not None:
                     ping_task.cancel()
-                    with suppress(asyncio.CancelledError):
+                    with suppress(asyncio.CancelledError, Exception):
                         await ping_task
                 with suppress(Exception):
                     await client._disconnect()
+
+            if stop_event.is_set():
+                break
+
+            if connected and (time.monotonic() - started_at) >= _BACKOFF_RESET_AFTER_S:
+                backoff_s = _INITIAL_BACKOFF_S
+            else:
+                await asyncio.sleep(backoff_s)
+                backoff_s = min(backoff_s * 2, _MAX_BACKOFF_S)
 
 
 _RUNNER: FeishuWsRunner | None = None

@@ -16,6 +16,7 @@ live here to keep ``channel.py`` focused on the channel class itself.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -31,19 +32,36 @@ def publish_runtime_model_update(
     model: str,
     model_preset: str | None,
 ) -> None:
-    """Enqueue a runtime model snapshot for websocket subscribers (fan-out in-channel)."""
-    bus.outbound.put_nowait(
-        OutboundMessage(
-            channel="websocket",
-            chat_id="*",
-            content="",
-            metadata={
-                "_runtime_model_updated": True,
-                "model": model,
-                "model_preset": model_preset,
-            },
-        )
+    """Enqueue a runtime model snapshot for websocket subscribers (fan-out in-channel).
+
+    Best-effort: the outbound queue is bounded (``MessageBus._MAX_QUEUE_SIZE``)
+    for OOM safety, and this helper is synchronous (``set_model_preset`` cannot
+    await), so a saturated bus must not raise ``asyncio.QueueFull`` into the
+    caller.  Dropping the notification is acceptable — it only refreshes the
+    model name shown in connected clients, and the next successful publish
+    carries the same snapshot.
+    """
+    message = OutboundMessage(
+        channel="websocket",
+        chat_id="*",
+        content="",
+        metadata={
+            "_runtime_model_updated": True,
+            "model": model,
+            "model_preset": model_preset,
+        },
     )
+    try:
+        bus.outbound.put_nowait(message)
+    except asyncio.QueueFull:
+        logger.warning(
+            "WebSocket outbound queue full; dropped runtime model update (model={}, preset={})",
+            model,
+            model_preset,
+        )
+    except RuntimeError as e:
+        # No running/attached event loop on this thread — nothing to notify.
+        logger.debug("Runtime model update skipped: {}", e)
 
 
 def _parse_inbound_payload(raw: str) -> str | None:

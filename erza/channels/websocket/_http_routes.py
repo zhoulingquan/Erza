@@ -11,7 +11,6 @@ class.
 from __future__ import annotations
 
 import email.utils
-import hmac
 import http
 import json
 import re
@@ -27,6 +26,7 @@ from erza.channels.websocket._chunked_header import (  # noqa: F401 — re-expor
     _collect_chunked_header,
     collect_chunked_header,
 )
+from erza.security.tokens import constant_time_equals
 from erza.webui.settings_api import WebUISettingsError
 
 # URL query 中出现的敏感参数名模式(用于废弃告警, 不记录参数值本身)。
@@ -235,11 +235,11 @@ def _issue_route_secret_matches(headers: Any, configured_secret: str) -> bool:
     authorization = headers.get("Authorization") or headers.get("authorization")
     if authorization and authorization.lower().startswith("bearer "):
         supplied = authorization[7:].strip()
-        return hmac.compare_digest(supplied, configured_secret)
+        return constant_time_equals(supplied, configured_secret)
     header_token = headers.get("x-erza-Auth") or headers.get("x-erza-auth")
     if not header_token:
         return False
-    return hmac.compare_digest(header_token.strip(), configured_secret)
+    return constant_time_equals(header_token.strip(), configured_secret)
 
 
 def _parse_request_path(path_with_query: str) -> tuple[str, dict[str, list[str]]]:

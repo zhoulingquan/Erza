@@ -184,6 +184,39 @@ class TestRepairCorruptFile:
         assert session.messages == []
         assert session.key == "test:empty"
 
+    def test_repair_survives_valid_json_non_object_line(self, tmp_path: Path):
+        """合法 JSON 但非对象的行不得让修复路径自身崩溃。
+
+        历史缺陷：``_repair_path`` 的 ``resolved_key`` 在 try 内才赋值，
+        而 ``data.get(...)`` 对非 dict 行会抛 AttributeError，异常分支再引用
+        ``resolved_key`` 就变成 NameError——本该"修复损坏会话"的路径自己崩掉。
+        """
+        mgr = SessionManager(tmp_path)
+        path = mgr._get_session_path("test:nonobject")
+        self._write_corrupt_jsonl(
+            path,
+            [
+                json.dumps({"_type": "metadata", "key": "test:nonobject"}),
+                "[1, 2, 3]",  # 合法 JSON，非对象
+                '"just a string"',  # 合法 JSON，非对象
+                json.dumps({"role": "user", "content": "survived"}),
+            ],
+        )
+
+        session = mgr._repair_path(path, "test:nonobject")
+        assert session is not None
+        assert [m.get("role") for m in session.messages] == ["user"]
+        assert session.messages[0]["content"] == "survived"
+
+    def test_repair_path_returns_none_without_raising_on_unreadable_file(self, tmp_path: Path):
+        """非 UTF-8 字节也不得让修复路径抛 NameError。"""
+        mgr = SessionManager(tmp_path)
+        path = mgr._get_session_path("test:badencoding")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe\x00\x00not-utf8")
+
+        assert mgr._repair_path(path, None) is None
+
     def test_repair_preserves_valid_messages_amid_corruption(self, tmp_path: Path):
         mgr = SessionManager(tmp_path)
         path = mgr._get_session_path("test:mixed")

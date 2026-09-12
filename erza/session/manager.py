@@ -650,6 +650,10 @@ class SessionManager:
         if not path.exists():
             return None
 
+        # 解析 key 必须在 try 之前:异常分支要用它记日志,而它在 try 内的
+        # 赋值点之前就可能抛错(例如 JSONL 某行是合法 JSON 但非对象),
+        # 那样会退化成 NameError 把原始错误吞掉。
+        resolved_key = key or path.stem
         try:
             messages: list[dict[str, Any]] = []
             metadata: dict[str, Any] = {}
@@ -667,6 +671,12 @@ class SessionManager:
                     try:
                         data = json.loads(line)
                     except json.JSONDecodeError:
+                        skipped += 1
+                        continue
+
+                    if not isinstance(data, dict):
+                        # 合法 JSON 但非对象(如 [1,2] / "x"):无法按消息处理,
+                        # 记为损坏行而不是让 .get() 抛 AttributeError。
                         skipped += 1
                         continue
 

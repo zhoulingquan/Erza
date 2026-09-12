@@ -57,6 +57,14 @@ _STAMP_FORMAT = "%Y-%m-%dT%H-%M-%SZ"
 _BACKUP_NAME_RE = re.compile(
     r"^memory-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-\d+(?:-[0-9a-f]{8})?\.db$"
 )
+# Pre-restore safety snapshots are addressed by their canonical relative path
+# ("recovery/<UTC stamp>[/-N]/memory-before-restore.db").  They are *not*
+# plain backups, so ``_BACKUP_NAME_RE`` never matches them; without this
+# second form the id returned by the restore command could not be fed back
+# into a rollback restore, i.e. the advertised rollback path was unusable.
+_SAFETY_BACKUP_ID_RE = re.compile(
+    r"^recovery/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(?:-\d+)?/memory-before-restore\.db$"
+)
 
 
 def _utc_stamp() -> str:
@@ -209,12 +217,32 @@ class MemoryBackupManager:
     # -- restore steps ------------------------------------------------------
 
     def _resolve_backup_path(self, backup_id: str) -> Path:
-        """Resolve *backup_id* to a canonical snapshot file under ``backups/``."""
-        if not backup_id or Path(backup_id).name != backup_id:
+        """Resolve *backup_id* to a canonical snapshot file.
+
+        Two id forms are accepted, both strictly validated before touching the
+        filesystem:
+
+        * ``memory-<UTC>-<seq>.db`` — a regular snapshot directly under
+          ``backups/``.
+        * ``recovery/<UTC>[/-N]/memory-before-restore.db`` — the pre-restore
+          safety snapshot reported by the restore command, which lives under
+          ``recovery/`` instead.  Accepting it here is what makes rollback
+          actually executable.
+        """
+        is_safety = bool(_SAFETY_BACKUP_ID_RE.fullmatch(backup_id))
+        is_plain = (
+            bool(backup_id)
+            and Path(backup_id).name == backup_id
+            and bool(_BACKUP_NAME_RE.fullmatch(backup_id))
+        )
+        if not (is_safety or is_plain):
             raise MemoryBackupError("invalid_backup_id", f"invalid backup id: {backup_id!r}")
-        if not _BACKUP_NAME_RE.fullmatch(backup_id):
-            raise MemoryBackupError("invalid_backup_id", f"invalid backup id: {backup_id!r}")
-        candidate = self.backups_dir / backup_id
+        if is_safety:
+            candidate = self._repository.structured_dir / backup_id
+            expected_parent = (self.recovery_dir / Path(backup_id).parent.name).resolve()
+        else:
+            candidate = self.backups_dir / backup_id
+            expected_parent = self.backups_dir.resolve()
         try:
             resolved = candidate.resolve()
         except OSError as exc:
@@ -226,9 +254,9 @@ class MemoryBackupManager:
             raise MemoryBackupError(
                 "invalid_backup_id", f"backup id escapes the structured dir: {backup_id!r}"
             )
-        if resolved.parent != self.backups_dir.resolve():
+        if resolved.parent != expected_parent:
             raise MemoryBackupError(
-                "invalid_backup_id", f"backup id escapes the backups dir: {backup_id!r}"
+                "invalid_backup_id", f"backup id escapes its backup dir: {backup_id!r}"
             )
         if not resolved.is_file():
             raise MemoryBackupError("backup_not_found", f"no backup with id {backup_id}")

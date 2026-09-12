@@ -127,15 +127,16 @@ class TestMessageToolSuppressLogic:
             name="message",
             arguments={"content": "Tool reply", "channel": "feishu", "chat_id": "chat123"},
         )
-        calls = iter(
-            [
-                LLMResponse(content="First answer", tool_calls=[]),
-                LLMResponse(content="", tool_calls=[tool_call]),
-                LLMResponse(content="", tool_calls=[]),
-                LLMResponse(content="", tool_calls=[]),
-                LLMResponse(content="", tool_calls=[]),
-            ]
-        )
+        # Scripted opening, then a surplus of empty responses.  The exact number
+        # of empties consumed depends on the retry/finalization policy (and on
+        # whether the planning router makes an extra call), so provide a
+        # comfortable margin instead of hard-coding an implementation detail.
+        scripted = [
+            LLMResponse(content="First answer", tool_calls=[]),
+            LLMResponse(content="", tool_calls=[tool_call]),
+        ]
+        scripted.extend(LLMResponse(content="", tool_calls=[]) for _ in range(20))
+        calls = iter(scripted)
         loop.provider.chat_with_retry = AsyncMock(side_effect=lambda *a, **kw: next(calls))
         loop.tools.get_definitions = MagicMock(return_value=[])
 

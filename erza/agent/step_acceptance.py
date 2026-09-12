@@ -379,15 +379,28 @@ class StepAcceptancePolicy:
         observations: list[ToolObservation],
         final_content: str | None,
     ) -> str:
+        # Only ``done_criteria_not_met`` is rescuable by the LLM verifier, so
+        # every other outcome must map to a *different* reason.  A receipt that
+        # exists but was never committed (``committed is not True``) proves no
+        # side effect, exactly like a missing receipt — it must not be reported
+        # as a mere criteria mismatch or the verifier could pass a step that
+        # never actually executed.
         if effective_evidence_level(step) == "tool":
             if not observations:
                 # No tool ran at all.
                 return "no_tool_receipt"
-            if not any(o.receipt for o in observations):
+            if not any(
+                o.receipt is not None and o.receipt.get("committed") is True
+                for o in observations
+            ):
+                if any(o.receipt is not None for o in observations):
+                    # Tools produced receipts, but none recorded a committed
+                    # side effect — hard failure, not verifier-rescuable.
+                    return "tool_receipt_not_committed"
                 # Tools ran but none produced a trusted side effect.
                 return "no_tool_receipt"
-            # A receipt exists; only the criteria is in question, which the
-            # verifier may rescue.
+            # A committed receipt exists; only the criteria is in question,
+            # which the verifier may rescue.
             return "done_criteria_not_met"
         if not final_content or not final_content.strip():
             if not observations:

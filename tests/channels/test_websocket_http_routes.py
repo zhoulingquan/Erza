@@ -786,6 +786,16 @@ async def test_state_change_route_rejects_bad_origin_with_403(
     GET. A cross-origin browser GET can still trigger the state change, so
     Origin enforcement must cover these routes regardless of method.
     """
+    # Isolate the config file. ``/api/skills/toggle`` mutates
+    # ``config.agents.defaults.disabled_skills`` and persists it through
+    # ``save_config``. Left unrouted, that writes the *user's real*
+    # ``~/.erza/config.json`` and takes its cross-process ``FileLock``:
+    # the test then leaks state between runs and can die on sandboxed file
+    # guards instead of testing Origin enforcement.
+    monkeypatch.setattr(
+        "erza.config.loader.get_config_path",
+        lambda: tmp_path / "config.json",
+    )
     sm = _seed_session(tmp_path, key="websocket:origin")
     channel = _ch(bus, session_manager=sm, port=29931)
     server_task = asyncio.create_task(channel.start())

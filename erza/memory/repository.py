@@ -130,14 +130,25 @@ class StructuredMemoryRepository:
         return self._tag_catalog
 
     def _load_tag_catalog(self) -> None:
-        if self.tags_path.exists():
-            try:
-                self._tag_catalog = TagCatalog.load(self.tags_path)
-            except (OSError, ValueError, ValidationError):
-                logger.warning("memory_tags_unreadable path={}", self.tags_path)
-                self._tag_catalog = TagCatalog()
-        else:
+        """Load ``tags.json``; raise when it exists but cannot be read.
+
+        Silently falling back to an empty catalog is worse than failing: with
+        no tags every Dream ingestion proposal is rejected as an unknown tag,
+        so the system looks alive while quietly ingesting nothing.  Raising
+        lets :meth:`rebuild` mark the repository degraded (fail closed), so the
+        problem is visible and cannot masquerade as a working pipeline.
+        """
+        if not self.tags_path.exists():
             self._tag_catalog = TagCatalog()
+            return
+        try:
+            self._tag_catalog = TagCatalog.load(self.tags_path)
+        except (OSError, ValueError, ValidationError) as exc:
+            self._tag_catalog = TagCatalog()
+            raise RepositoryDegradedError(
+                f"cannot read memory tags catalog {self.tags_path}: {exc} "
+                "(code=tags_catalog_unreadable)"
+            ) from exc
 
     def _initialize_database(self) -> None:
         """Create the SQLite fact database and schema when missing (design section 11).
@@ -196,7 +207,13 @@ class StructuredMemoryRepository:
 
     def rebuild(self) -> RepositoryHealth:
         """Refresh health against the SQLite fact database; fail closed on corruption."""
-        self._load_tag_catalog()
+        catalog_error: RepositoryDegradedError | None = None
+        try:
+            self._load_tag_catalog()
+        except RepositoryDegradedError as exc:
+            # Remember it but still refresh the database health below, so a
+            # corrupt DB (the more severe problem) is the one reported.
+            catalog_error = exc
         try:
             with connect_memory_db(
                 self.database_path, lock_timeout_s=self.lock_timeout_s
@@ -206,6 +223,8 @@ class StructuredMemoryRepository:
             self._degrade(_degraded_error_code(exc), str(exc))
         except (OSError, sqlite3.Error) as exc:
             self._degrade("sqlite_open_error", f"cannot open memory database: {exc}")
+        if catalog_error is not None and self._health.state != "degraded":
+            self._degrade(_degraded_error_code(catalog_error), str(catalog_error))
         return self._health
 
     def _refresh_health(self, connection: sqlite3.Connection) -> None:

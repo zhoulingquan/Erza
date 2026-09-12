@@ -109,6 +109,12 @@ class CronService:
         self._exec_tasks: set[asyncio.Task] = set()
         self._running = False
         self._timer_active = False
+        # Job ids currently being executed by ``run_job`` (manual, out-of-band
+        # trigger).  Consulted by ``_load_store`` (so the in-flight job's store
+        # is not swapped underneath it) and by ``_on_timer``'s due filter (so a
+        # timer tick cannot run the same job concurrently and double-write its
+        # run_history).
+        self._inflight_job_ids: set[str] = set()
         self.max_sleep_ms = max_sleep_ms
 
     def _load_jobs(self) -> tuple[list[CronJob], int] | None:
@@ -239,13 +245,15 @@ class CronService:
         - Reload every time because it needs to merge operations on the jobs object from other instances.
         - During _on_timer execution, return the existing store to prevent concurrent
           _load_store calls (e.g. from list_jobs polling) from replacing it mid-execution.
+        - The same guard applies while a manual ``run_job`` is in flight, so the store
+          (and therefore the ``target_job`` object) is not detached mid-run.
         - When the on-disk store exists but is unreadable: keep using the
           previous in-memory ``self._store`` if we already have one (so a
           transient corruption does not drop live jobs); only the very first
           load (during ``start``) can return ``None`` to signal an unrecoverable
           state to the caller.
         """
-        if self._timer_active and self._store:
+        if (self._timer_active or self._inflight_job_ids) and self._store:
             return self._store
         loaded = self._load_jobs()
         if loaded is None:
@@ -489,8 +497,12 @@ class CronService:
         """Get the earliest next run time across all jobs."""
         if not self._store:
             return None
+        # ``is not None`` (not truthiness): a timestamp of 0 is a valid epoch-ms
+        # value and must not be filtered out, or the timer would sleep through it.
         times = [
-            j.state.next_run_at_ms for j in self._store.jobs if j.enabled and j.state.next_run_at_ms
+            j.state.next_run_at_ms
+            for j in self._store.jobs
+            if j.enabled and j.state.next_run_at_ms is not None
         ]
         return min(times) if times else None
 
@@ -555,7 +567,11 @@ class CronService:
             due_jobs = [
                 j
                 for j in self._store.jobs
-                if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
+                if j.enabled
+                and j.state.next_run_at_ms is not None
+                and now >= j.state.next_run_at_ms
+                # Skip jobs a manual ``run_job`` is already executing.
+                and j.id not in self._inflight_job_ids
             ]
 
             for job in due_jobs:
@@ -860,9 +876,16 @@ class CronService:
         return job
 
     async def run_job(self, job_id: str, force: bool = False) -> bool:
-        """Manually run a job without disturbing the service's running state."""
+        """Manually run a job without disturbing the service's running state.
+
+        The job id is marked in-flight for the duration so a concurrent timer
+        tick cannot execute the same job (which would double-write
+        ``run_history``) and so ``_load_store`` keeps returning the live store
+        instead of replacing ``target_job`` mid-run.
+        """
         was_running = self._running
         self._running = True
+        claimed = False
         try:
             with self._store_lock:
                 store = self._load_store()
@@ -871,6 +894,8 @@ class CronService:
                     return False
                 if not force and not target_job.enabled:
                     return False
+                self._inflight_job_ids.add(job_id)
+                claimed = True
             # _execute_job 可能耗时较长 (await on_job),故先释放锁再执行,
             # 避免阻塞其他公共方法;执行完再加锁保存。
             await self._execute_job(target_job)
@@ -878,6 +903,9 @@ class CronService:
                 self._save_store()
             return True
         finally:
+            if claimed:
+                with self._store_lock:
+                    self._inflight_job_ids.discard(job_id)
             self._running = was_running
             if was_running:
                 self._arm_timer()

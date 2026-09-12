@@ -25,6 +25,7 @@ from erza.agent.hook import AgentHook, AgentHookContext
 from erza.agent.planning_policy import PlanningPolicy
 from erza.agent.provider_registry import ProviderRegistry
 from erza.agent.step_acceptance import ToolObservation
+from erza.agent.turn_overrides import current_provider_override
 from erza.ledger import (
     CallLedger,
     bind_call_ledger,
@@ -234,7 +235,17 @@ class AgentRunner:
 
     @property
     def provider(self) -> LLMProvider:
-        """Current provider, reflecting the bound ``ProviderRegistry`` when set."""
+        """Current provider, reflecting per-turn and registry overrides.
+
+        Resolution order: a per-turn override bound via
+        ``turn_runtime_overrides`` (used by background turns such as the
+        heartbeat, so they never mutate shared state) wins; otherwise the
+        bound ``ProviderRegistry`` (kept live for provider hot-switching);
+        otherwise the provider captured at construction.
+        """
+        override = current_provider_override()
+        if override is not None:
+            return override
         registry = self._provider_registry
         if registry is not None:
             return registry.provider
@@ -444,6 +455,9 @@ class AgentRunner:
             state.progress_tracker = ProgressTracker(ProgressPolicy())
         reflection = self.init_reflection(spec)
 
+        # 循环可能一次都不执行(max_iterations <= 0),而循环之后仍会用到
+        # ``iteration``(终止反思、结果装配),因此先给出确定值,避免 NameError。
+        iteration = -1
         for iteration in range(spec.max_iterations):
             # P1-T7: Check wall-clock deadline before each iteration.
             if turn_deadline is not None and time.monotonic() >= turn_deadline:
@@ -454,6 +468,11 @@ class AgentRunner:
                 context.final_content = state.final_content
                 await hook.after_iteration(context)
                 break
+
+            # P1-T6: 周期性反思 —— 每 reflection_interval 轮触发一次(非阻塞,
+            # fire-and-forget)。此前该方法只有定义与委托、主循环内没有任何
+            # 调用点,"每 N 轮反思"实际从不发生。
+            self.fire_periodic_reflection(reflection, spec, messages, iteration)
 
             # W11-3: stall check before governance (HEAD call-site parity).
             (
@@ -628,6 +647,11 @@ class AgentRunner:
             )
             if new_plan is not None:
                 plan = new_plan
+                # 计划被替换:旧的 tool_observations 必须清空。replan/升级后
+                # step id 从 1 重新开始,残留观察会因 step_id 撞号而混入新步骤
+                # 的证据,可能把未完成的步骤误判为完成(与 742/991/1298 三处
+                # 计划替换路径保持一致)。
+                state.tool_observations.clear()
                 state.plan_snapshot = await self.emit_plan_snapshot(
                     spec, plan, state.turn_id, stop_reason=None, origin="escalated"
                 )

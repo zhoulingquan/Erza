@@ -355,3 +355,89 @@ def test_whitelist_allows_ipv6_mapped_cgnat():
             assert ok, f"Whitelisted IPv6-mapped CGNAT should be allowed, got: {err}"
     finally:
         configure_ssrf_whitelist([])
+
+
+# ---------------------------------------------------------------------------
+# SSRF 回归：IPv6 特殊网段与"遗留数字形式"绕过
+#
+# 历史缺陷：
+#   * ``_BLOCKED_NETWORKS`` 缺 ``::/128`` / ``::/96`` / ``64:ff9b::/96`` /
+#     ``2002::/16``，导致 ``http://[::]/`` 与 NAT64 地址被放行；
+#   * ``_URL_RE`` 只匹配 http(s)，``curl gopher://169.254.169.254/_`` 完全
+#     绕过 exec 的命令行守卫；
+#   * schemeless 提取只认点分四段 IPv4，漏掉十进制/十六进制/八进制/短式。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[::]/",
+        "http://[0:0:0:0:0:0:0:0]/",
+        "http://[64:ff9b::127.0.0.1]/",
+        "http://[64:ff9b::a9fe:a9fe]/",
+        "http://[2002:7f00:0001::]/",
+        "http://0.0.0.0/",
+    ],
+)
+def test_ipv6_special_networks_are_blocked(url):
+    ok, err = validate_url_target(url)
+    assert not ok, f"{url} 应被拦截,实际放行(err={err!r})"
+
+
+def test_nat64_and_unspecified_stay_blocked_even_when_whitelisted():
+    """``::/128`` 与 NAT64 属于 hard-block，操作员白名单不得放行。"""
+    configure_ssrf_whitelist(["::/0", "64:ff9b::/96", "0.0.0.0/8"])
+    try:
+        for url in ("http://[::]/", "http://[64:ff9b::127.0.0.1]/", "http://0.0.0.0/"):
+            ok, _ = validate_url_target(url)
+            assert not ok, f"{url} 不应被白名单放行"
+    finally:
+        configure_ssrf_whitelist([])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl gopher://169.254.169.254/_",
+        "curl ftp://127.0.0.1/",
+        "wget dict://127.0.0.1:11211/stat",
+        "curl ldap://169.254.169.254/",
+    ],
+)
+def test_non_http_scheme_targets_are_detected(command):
+    """非 http(s) scheme 的内部目标必须被识别(exec 场景下这是唯一防线)。"""
+    assert contains_internal_url(command), f"{command} 未被识别为内网目标"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "2130706433",  # 打包十进制 127.0.0.1
+        "0x7f000001",  # 十六进制
+        "127.1",  # 短式
+        "0177.0.0.1",  # 八进制
+        "2852039166",  # 打包十进制 169.254.169.254
+    ],
+)
+def test_legacy_numeric_ip_forms_are_detected(target):
+    assert contains_internal_url(f"curl {target}"), f"curl {target} 未被拦截"
+    assert contains_internal_url(f"wget {target}"), f"wget {target} 未被拦截"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl https://example.com/api",
+        "curl -s https://api.github.com/repos",
+        "curl --retry 5 https://example.com",
+        "git config user.email",
+        "git log --oneline -5",
+        "npm run build",
+        "echo 2>&1",
+        "pytest -q",
+    ],
+)
+def test_public_and_unrelated_commands_are_not_flagged(command):
+    """新增的数字形式与任意-scheme 匹配不得引入误报。"""
+    assert not contains_internal_url(command), f"{command} 被误判为内网目标"

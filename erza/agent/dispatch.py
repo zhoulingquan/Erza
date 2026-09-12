@@ -22,6 +22,7 @@ from loguru import logger
 
 from erza.agent import context as agent_context
 from erza.agent import turn_telemetry
+from erza.agent.turn_overrides import context_without_overrides
 from erza.bus.events import InboundMessage, OutboundMessage, make_session_key
 from erza.bus.queue import MessageBus
 from erza.command import CommandApplicationService, CommandContext, CommandRouter
@@ -36,6 +37,15 @@ if TYPE_CHECKING:
     from erza.tools.registry import ToolRegistry
 
 UNIFIED_SESSION_KEY = "unified:default"
+
+# Liveness guard for the inbound consumer: if ``consume_inbound`` keeps raising
+# (e.g. the bus was bound to a different event loop, or the queue was swapped
+# out underneath us) the naive ``continue`` turns into an unbounded hot spin
+# that burns CPU, floods the log, and starves every other task on the loop.
+# Retry with a small backoff, and give up loudly once the failure is clearly
+# not transient.
+_MAX_CONSECUTIVE_CONSUME_ERRORS = 25
+_CONSUME_ERROR_BACKOFF_S = 0.1
 
 # 主循环/任务管理相关超时 (集中定义, 避免魔法数字散落):
 _TASK_CANCEL_WAIT_S = 10.0  # /stop 等待单个被取消任务收尾的上限
@@ -132,6 +142,7 @@ class MessageDispatcher:
         await self._agent._connect_mcp()
         logger.info("Agent loop started")
 
+        consecutive_consume_errors = 0
         while self._running:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
@@ -155,8 +166,25 @@ class MessageDispatcher:
                     raise
                 continue
             except Exception as e:
-                logger.warning("Error consuming inbound message: {}, continuing...", e)
+                consecutive_consume_errors += 1
+                if consecutive_consume_errors >= _MAX_CONSECUTIVE_CONSUME_ERRORS:
+                    logger.error(
+                        "Inbound consumer failed {} times consecutively ({}); "
+                        "stopping the agent loop instead of spinning.",
+                        consecutive_consume_errors,
+                        e,
+                    )
+                    self._running = False
+                    break
+                logger.warning(
+                    "Error consuming inbound message ({}/{}): {}, retrying...",
+                    consecutive_consume_errors,
+                    _MAX_CONSECUTIVE_CONSUME_ERRORS,
+                    e,
+                )
+                await asyncio.sleep(_CONSUME_ERROR_BACKOFF_S)
                 continue
+            consecutive_consume_errors = 0
 
             raw = msg.content.strip()
             # 标记用户有新活动，重置 Dream 空闲触发器的空闲计时器
@@ -406,7 +434,10 @@ class MessageDispatcher:
 
     def _schedule_background(self, coro) -> None:
         """Schedule a coroutine as a tracked background task (drained on shutdown)."""
-        task = asyncio.create_task(coro)
+        # asyncio.create_task 会复制调用方的 context。后台任务是"脱离本轮"的工作
+        # (记忆整理、子代理等),不应继承本轮的 provider/model/light_context 覆盖
+        # (例如心跳专用模型),否则这些覆盖会随任务一直存活。
+        task = asyncio.create_task(coro, context=context_without_overrides())
         # 使用 set 而非 list，回调用 discard 避免 remove 时 KeyError
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)

@@ -85,16 +85,21 @@ def _fmt_known(tc, fmt: tuple, max_length: int = 40) -> str:
     val = _extract_arg(tc, fmt[0])
     if val is None:
         return tc.name
+    # The template's literal text (the "ls " / "$ " prefix) is part of the
+    # rendered hint, so the payload budget must exclude it — otherwise the
+    # rendered hint silently exceeds ``max_length`` (e.g. `ls <40-char path>`
+    # came out 43 chars wide no matter what the caller asked for).
+    overhead = len(fmt[1]) - 2 if "{}" in fmt[1] else len(fmt[1])
+    budget = max(8, max_length - overhead)
     if fmt[2]:  # is_path
-        val = abbreviate_path(val, max_len=max_length)
+        val = abbreviate_path(val, max_len=budget)
     elif fmt[3]:  # is_command
-        val = _abbreviate_command(val, max_len=max_length)
+        val = _abbreviate_command(val, max_len=budget)
     return fmt[1].format(val)
 
 
-def _abbreviate_command(cmd: str, max_len: int = 40) -> str:
-    """Abbreviate paths in a command string, then truncate."""
-    path_max = max(max_len // 2, 25)
+def _fold_paths_in_command(cmd: str, path_max: int) -> str:
+    """Replace every path found in *cmd* with its folded form at *path_max*."""
 
     def _replace_path(match: re.Match[str]) -> str:
         if match.group("double") is not None:
@@ -103,10 +108,34 @@ def _abbreviate_command(cmd: str, max_len: int = 40) -> str:
             return f"'{abbreviate_path(match.group('single'), max_len=path_max)}'"
         return abbreviate_path(match.group("bare"), max_len=path_max)
 
-    abbreviated = _PATH_IN_CMD_RE.sub(_replace_path, cmd)
-    if len(abbreviated) <= max_len:
-        return abbreviated
-    return abbreviated[: max_len - 1] + "\u2026"
+    return _PATH_IN_CMD_RE.sub(_replace_path, cmd)
+
+
+def _abbreviate_command(cmd: str, max_len: int = 40) -> str:
+    """Fold the paths inside *cmd*, then make sure the result fits *max_len*.
+
+    The per-path budget is *searched* rather than fixed at ``max_len // 2``:
+    a command that overflows only because of an embedded path should have that
+    path folded (``cd …/Erza/workspace && pytest tests/``) instead of being
+    blindly truncated mid-path, which used to hide the command tail
+    (``npm test``, flags, …).
+    """
+    if max_len <= 0:
+        return cmd
+    if len(cmd) <= max_len:
+        return cmd
+    if not _PATH_IN_CMD_RE.search(cmd):
+        return cmd[: max_len - 1] + "\u2026" if max_len > 1 else cmd[:max_len]
+
+    floor = 6
+    for path_max in range(max(floor, max_len // 2), floor - 1, -1):
+        candidate = _fold_paths_in_command(cmd, path_max)
+        if len(candidate) <= max_len:
+            return candidate
+    folded = _fold_paths_in_command(cmd, floor)
+    if len(folded) <= max_len:
+        return folded
+    return folded[: max_len - 1] + "\u2026" if max_len > 1 else folded[:max_len]
 
 
 def _fmt_mcp(tc, max_length: int = 40) -> str:

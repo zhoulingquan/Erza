@@ -150,6 +150,22 @@ def _short_tool_id() -> str:
     return "".join(secrets.choice(_ALNUM) for _ in range(9))
 
 
+def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
+    """Parse a tool-call ``arguments`` payload into a dict, defaulting to ``{}``.
+
+    Providers occasionally emit arguments that repair to a bare string, number,
+    or list.  The non-streaming path already guards with ``isinstance(..., dict)``;
+    this helper gives the streaming accumulator the same guarantee so dispatch
+    never receives a non-mapping payload.
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    parsed = json_repair.loads(raw) if isinstance(raw, str) else raw
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _get(obj: Any, key: str) -> Any:
     """Get a value from dict or object attribute, returning None if absent."""
     if isinstance(obj, dict):
@@ -1277,7 +1293,10 @@ class OpenAICompatProvider(LLMProvider):
                 ToolCallRequest(
                     id=b["id"] or _short_tool_id(),
                     name=b["name"],
-                    arguments=json_repair.loads(b["arguments"]) if b["arguments"] else {},
+                    # Mirror the non-streaming ``_parse`` guard: a payload that
+                    # repairs to a non-dict (bare string / number / list) must
+                    # not leak into downstream tool dispatch as a weird type.
+                    arguments=_parse_tool_arguments(b["arguments"]),
                     extra_content=b.get("extra_content"),
                     provider_specific_fields=b.get("prov"),
                     function_provider_specific_fields=b.get("fn_prov"),

@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hmac
 import json as _json
 import time
 import uuid
@@ -38,6 +37,7 @@ from aiohttp import web
 from loguru import logger
 
 from erza.config.paths import get_media_dir
+from erza.security.tokens import constant_time_equals
 from erza.utils.helpers import safe_filename
 from erza.utils.media_decode import (
     MAX_FILE_SIZE,
@@ -483,7 +483,7 @@ async def _auth_middleware(request: web.Request, handler):
     - ``/health`` is always public (liveness probes).
     - When ``app["api_key"]`` is empty, all routes are open (development mode).
     - When set, ``/v1/*`` requires ``Authorization: Bearer <api_key>``.
-    Comparison uses ``hmac.compare_digest`` to avoid timing leaks.
+    Comparison uses constant-time equality to avoid timing leaks.
     """
     api_key: str = request.app.get("api_key", "")
     if not api_key:
@@ -503,7 +503,7 @@ async def _auth_middleware(request: web.Request, handler):
     else:
         supplied = ""
 
-    if supplied and hmac.compare_digest(supplied, api_key):
+    if supplied and constant_time_equals(supplied, api_key):
         return await handler(request)
 
     return _error_json(
