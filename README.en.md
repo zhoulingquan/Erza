@@ -9,7 +9,7 @@ a transparent execution kernel, deterministic governance, and a pluggable edge.
 
 [![Python](https://img.shields.io/badge/python-≥3.11-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.4.0-success)](https://github.com/zhoulingquan/Erza/releases)
+[![Release](https://img.shields.io/badge/release-v0.7.0-success)](https://github.com/zhoulingquan/Erza/releases)
 [![Status](https://img.shields.io/badge/status-alpha-orange)]()
 
 [简体中文](./README.md) | **[English]**
@@ -86,14 +86,27 @@ A pluggable strategy chain compresses the context back into the window before ea
 
 Failures — or every N iterations — trigger a one-sentence lesson written to `reflections.jsonl`; **Dream** distills new summaries and reflections into candidate facts when idle (`dream_trigger.py`, fires 5 minutes after the user goes quiet, complementing the cron floor), feeding them into the governed memory lifecycle. The goal is cross-turn learning: never repeat the same mistake.
 
+### Concurrency isolation (`agent/turn_overrides.py`)
+
+Per-turn provider / model / light-context overrides are isolated via `ContextVar`: heartbeat, Dream and other background tasks run with their own model configuration without mutating shared state seen by concurrently executing user turns; background tasks explicitly detach from override contexts and always read the defaults.
+
+### Reliability guards
+
+Deterministic guards designed for long-running operation, none relying on model good behavior:
+
+- **Inbound consume guard** (`agent/dispatch.py`): persistent consume failures back off exponentially and fail fast after 25 consecutive errors — no silent CPU-saturating hot loops
+- **Outbound send timeout** (`channels.sendTimeoutS`, default 30s): a slow client only takes itself offline; it can no longer freeze the whole gateway dispatcher
+- **Atomic persistence**: session/config/memory writes are temp-file + fsync + rename + parent-dir fsync — crashes never leave half-written lines; memory `append_history` holds a cross-process `FileLock` across "read cursor → append → write cursor"
+- **Constant-time credential comparison** (`security/tokens.py`): token/secret checks go through encoded `hmac.compare_digest`; non-ASCII inputs no longer throw at handshake time
+
 ## State and memory
 
 | Layer | Carrier | Responsibility |
 |----|------|------|
-| Short-term session | `session/` | Active conversation context, atomic writes (temp file + fsync + rename), crash-safe |
+| Short-term session | `session/` | Active conversation context, atomic writes (temp file + fsync + rename + parent-dir fsync), crash-safe, corrupted sessions auto-repaired with a guarded repair path |
 | Compacted archive | `memory/history.jsonl` | Append-only history summaries with cursors, maintained by the Consolidator |
 | Long-term knowledge | `memory/structured/memory.db` | **Single SQLite fact store** (`memory/repository.py`, fail-closed health); only `memory/lifecycle.py` may promote/replace/revoke/expire records, all changes in one transaction |
-| Lessons | `memory/reflections.jsonl` | Failure and periodic reflections |
+| Lessons | `memory/reflections.jsonl` | Failure and periodic reflections (cross-process FileLock appends, atomic cursor writes) |
 | Version history | `utils/` GitStore (embedded Git) | Every long-term file change is diffable and rollback-able |
 
 The only path for memory into a prompt is **deterministic recall**: only active facts matching exact scopes are recalled; candidate facts and historical archives are never injected wholesale. Legacy JSONL journals serve only as migration input (`memory/jsonl_import.py`).
@@ -129,7 +142,7 @@ A unified base class plus declarative `ProviderSpec` behavior flags (`force_stri
 
 | Module | Responsibility |
 |------|------|
-| `channels/` (12.6k lines) | 5 IM adapters (Feishu/WeChat/WeCom/DingTalk/QQ) + WebSocket, unified `BaseChannel` interface, QR-code login (`QRCodeAuthHandler`), `allowFrom` admission allow-lists, all optional extras |
+| `channels/` (12.9k lines) | 5 IM adapters (Feishu/WeChat/WeCom/DingTalk/QQ) + WebSocket, unified `BaseChannel` interface, QR-code login (`QRCodeAuthHandler`), `allowFrom` admission allow-lists, all optional extras |
 | `bus/` | 49-line async message bus, bounded queue + natural backpressure |
 | `command/` | Slash-command router with priority / exact / prefix matching, including governed memory-management commands |
 | `cron/` | Natural-language scheduled tasks, persisted, catch-up execution after restart |
@@ -140,9 +153,9 @@ A unified base class plus declarative `ProviderSpec` behavior flags (`force_stri
 
 | Boundary | Mechanism |
 |------|------|
-| File access | Workspace path boundary (`security/workspace_policy.py`); boundary violations are hard policy errors the model cannot bypass with shell tricks |
-| Shell execution | Optional `bwrap` sandbox, restricted env injection, exec_session config gating |
-| Outbound HTTP | SSRF protection: transport-level hook blocking IP-literal targets, DNS-rebinding pinning (30s TTL), redirect re-validation (`security/network.py`) |
+| File access | Workspace path boundary (`security/workspace_policy.py`); boundary violations are hard policy errors the model cannot bypass with shell tricks; contract tools re-verify path containment after writes (TOCTOU) |
+| Shell execution | Optional `bwrap` sandbox, restricted env injection, exec_session config gating; absolute-path extraction covers `<`, `=`, `(` lead-ins so `cat </etc/passwd` and `dd if=...` land in containment checks |
+| Outbound HTTP | SSRF protection: transport-level hook blocking IP-literal targets (IPv4/IPv6 unspecified, NAT64, 0.0.0.0/8 hard-blocked), DNS-rebinding pinning (30s TTL), redirect re-validation (`security/network.py`); the exec command-line URL guard covers any scheme plus decimal/hex/octal/short-form IP variants |
 | Risk levels | `RiskLevel` on tools; high-risk tools behind approval gates and isolated checkpoints (`agent/tool_checkpoint.py`) |
 | Channel admission | Per-channel `allowFrom` allow-lists |
 
@@ -168,27 +181,27 @@ print(result.content, result.tools_used)
 
 ## Code map
 
-~**70k lines** of Python (69.6k), ~**40k lines** of TypeScript in the WebUI, **253 test files / 85k lines** of tests:
+~**71k lines** of Python (70.8k), ~**40k lines** of TypeScript in the WebUI, **276 test files / 88k lines** of tests:
 
 | Package | Lines | Responsibility |
 |----|------|------|
-| `erza/channels/` | 12,644 | IM channel adapters and media handling |
-| `erza/agent/` | 12,511 | Execution kernel: state machine, ReAct, planning, acceptance, context governance |
-| `erza/tools/` | 8,963 | Built-in tools, registry, MCP runtime, sandbox |
-| `erza/webui/` | 6,485 | Console gateway API (frontend at repo-root `webui/`) |
-| `erza/memory/` | 6,163 | SQLite memory repository, lifecycle governance, Dream distillation |
-| `erza/providers/` | 5,121 | Multi-provider abstraction and fallback chain |
-| `erza/cli/` | 3,717 | Typer commands, terminal rendering, gateway runner |
-| `erza/utils/` | 3,516 | Document parsing, media decoding, GitStore, atomic writes |
+| `erza/agent/` | 12,978 | Execution kernel: state machine, ReAct, planning, acceptance, context governance, concurrency isolation |
+| `erza/channels/` | 12,862 | IM channel adapters and media handling |
+| `erza/tools/` | 9,024 | Built-in tools, registry, MCP runtime, sandbox |
+| `erza/webui/` | 6,638 | Console gateway API (frontend at repo-root `webui/`) |
+| `erza/memory/` | 6,382 | SQLite memory repository, lifecycle governance, Dream distillation |
+| `erza/providers/` | 5,147 | Multi-provider abstraction and fallback chain |
+| `erza/cli/` | 3,712 | Typer commands, terminal rendering, gateway runner |
+| `erza/utils/` | 3,575 | Document parsing, media decoding, GitStore, atomic writes |
 | `erza/skills/` | 2,105 | Built-in skill packages |
-| `erza/session/` | 1,608 | Session persistence and goal state |
-| `erza/config/` | 1,285 | Pydantic config models (camelCase/snake_case dual-compatible) |
+| `erza/session/` | 1,625 | Session persistence and goal state |
+| `erza/security/` | 1,374 | Workspace boundary, SSRF, risk levels, constant-time comparison |
+| `erza/config/` | 1,272 | Pydantic config models (camelCase/snake_case dual-compatible) |
 | `erza/command/` | 1,258 | Slash-command router |
-| `erza/security/` | 1,240 | Workspace boundary, SSRF, risk levels |
-| `erza/cron/` | 1,014 | Scheduled-task service |
-| `erza/composition/` | 573 | Composition roots (gateway / agent_app) |
+| `erza/cron/` | 1,042 | Scheduled-task service |
+| `erza/composition/` | 625 | Composition roots (gateway / agent_app) |
 | `erza/api_compat/` | 557 | OpenAI-compatible API |
-| `erza/ledger/` | 431 | Call ledger and turn budget |
+| `erza/ledger/` | 447 | Call ledger and turn budget |
 | `erza/bus/` | 141 | Message bus |
 | `erza/erza.py` | SDK facade | `Erza.from_config().run()` |
 
@@ -240,11 +253,11 @@ Channels are auto-discovered via `pkgutil` and extensible via entry-point plugin
 
 Markdown + YAML frontmatter, loaded on demand:
 
-`cron` · `document-processing` · `github` · `long-goal` · `memory` · `my` · `skill-creator` · `summarize` · `tmux` · `update-setup` · `weather`
+`cron` · `document-processing` · `github` · `long-goal` · `memory` · `my` · `skill-creator` · `update-setup` · `weather`
 
 ## Testing and quality
 
-253 test files, 85k lines of tests covering every core module; `pytest-asyncio` auto mode + coverage; `ruff` static checks; CI runs a three-OS matrix.
+276 test files, 88k lines of tests covering every core module; `pytest-asyncio` auto mode + coverage; `ruff` static checks; CI runs a three-OS matrix.
 
 ```bash
 pip install -e ".[dev]"
